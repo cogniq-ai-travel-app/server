@@ -1,0 +1,53 @@
+# Virtual Environment
+venv/
+.venv/
+
+# Environment Variables
+.env
+
+# Python Cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# VS Code
+.vscode/
+
+# Pytest
+.pytest_cache/
+
+# Coverage Reports
+.coverage
+htmlcov/
+
+# Build / Distribution
+build/
+dist/
+*.egg-info/
+
+# Logs
+*.log
+
+# OS Files
+.DS_Store
+Thumbs.db
+
+# SQLite Databases (if any)
+*.db
+*.sqlite3
+
+# Jupyter Notebooks Checkpoints
+.ipynb_checkpoints/
+
+# MyPy
+.mypy_cache/
+
+# Ruff
+.ruff_cache/
+
+# Pyre
+.pyre/
+
+# Temporary Files
+*.tmp
+*.temp
