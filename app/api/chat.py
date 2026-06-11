@@ -44,9 +44,9 @@ async def handle_pico_chat_endpoint(request: Request):
         validated_request = ChatRequest(**request_dict)
         final_request_dict = validated_request.model_dump()
 
-        print("\n" + "="*60)
-        print("🚨 [RAW FRONTEND PAYLOAD RECEIVED OVER THE WIRE] 🚨")
-        print(f"• Content Type: {content_type}")
+        print("\n" + "="*60, flush=True)
+        print("🚨 [RAW FRONTEND PAYLOAD RECEIVED OVER THE WIRE] 🚨", flush=True)
+        print(f"• Content Type: {content_type}", flush=True)
 
         log_dict = copy.deepcopy(final_request_dict)
         if log_dict.get("attachment") and log_dict["attachment"].get("base64_data"):
@@ -58,7 +58,7 @@ async def handle_pico_chat_endpoint(request: Request):
         if log_dict.get("trip_context") and log_dict["trip_context"].get("categories"):
             log_dict["trip_context"]["categories"] = "[TRUNCATED CATEGORIES]"
 
-        print(f"• Raw Body Data:\n{json.dumps(log_dict, indent=4)}")
+        print(f"• Raw Body Data:\n{json.dumps(log_dict, indent=4)}", flush=True)
 
 
         initial_state = {
@@ -84,7 +84,7 @@ async def handle_pico_chat_endpoint(request: Request):
     except HTTPException as http_ex:
         raise http_ex
     except Exception as e:
-        print(f"\n[CRITICAL ROUTE RUNTIME EXCEPTION]: {str(e)}\n")
+        print(f"\n[CRITICAL ROUTE RUNTIME EXCEPTION]: {str(e)}\n", flush=True)
         raise HTTPException(
             status_code=500, 
             detail=f"Internal Agentic Server Exception: {str(e)}"

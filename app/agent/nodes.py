@@ -1,4 +1,5 @@
 import json
+import re
 from google import genai
 from google.genai import types
 from app.core.config import settings
@@ -9,7 +10,78 @@ import base64
 
 client = genai.Client(api_key=settings.GOOGLE_API_KEY)
 
+
+def log_backend(message: str):
+    print(message, flush=True)
+
+
+def parse_ai_json(text_response: str) -> dict:
+    """Parse model JSON even when it is wrapped in markdown or extra text."""
+    if not text_response:
+        raise ValueError("Model returned an empty response.")
+
+    clean_text = text_response.strip()
+
+    if clean_text.startswith("```json"):
+        clean_text = clean_text[7:].strip()
+
+    if clean_text.startswith("```"):
+        clean_text = clean_text[3:].strip()
+
+    if clean_text.endswith("```"):
+        clean_text = clean_text[:-3].strip()
+
+    try:
+        parsed = json.loads(clean_text)
+
+        if isinstance(parsed, str):
+            parsed = json.loads(parsed)
+
+        if not isinstance(parsed, dict):
+            raise ValueError("Parsed model output was not a JSON object.")
+
+        return parsed
+    except json.JSONDecodeError:
+        match = re.search(r"\{.*\}", clean_text, flags=re.DOTALL)
+
+        if not match:
+            raise
+
+        parsed = json.loads(match.group(0))
+
+        if isinstance(parsed, str):
+            parsed = json.loads(parsed)
+
+        if not isinstance(parsed, dict):
+            raise ValueError("Extracted model output was not a JSON object.")
+
+        return parsed
+
+
+def response_to_dict(response) -> dict:
+    """Prefer structured parsed output, then fall back to text JSON."""
+    parsed = getattr(response, "parsed", None)
+
+    if parsed is not None:
+      if hasattr(parsed, "model_dump"):
+          return parsed.model_dump(exclude_none=True)
+
+      if isinstance(parsed, dict):
+          return parsed
+
+    text = getattr(response, "text", None)
+
+    if not text:
+        raise ValueError("Model response had no text or parsed payload.")
+
+    return parse_ai_json(text)
+
+
 def generate_content_with_fallback(*, contents, config):
+    """
+    Kept for compatibility. This only retries generation errors.
+    Prefer generate_json_with_fallback for Pico JSON responses.
+    """
     model_names = [
         settings.GEMMA_PRIMARY_MODEL,
         settings.GEMMA_FALLBACK_MODEL,
@@ -25,7 +97,7 @@ def generate_content_with_fallback(*, contents, config):
         tried.add(model_name)
 
         try:
-            print(f"[Gemma] Trying model: {model_name}")
+            log_backend(f"[Gemma] Trying model: {model_name}")
             return client.models.generate_content(
                 model=model_name,
                 contents=contents,
@@ -33,21 +105,56 @@ def generate_content_with_fallback(*, contents, config):
             )
         except Exception as exc:
             last_error = exc
-            print(f"[Gemma] Model failed: {model_name} -> {exc}")
+            log_backend(f"[Gemma] Model failed: {model_name} -> {exc}")
 
     raise last_error or RuntimeError("No Gemma model was available.")
 
-def parse_ai_json(text_response: str) -> dict:
-    """Safely strips markdown formatting blocks from LLM JSON outputs."""
-    clean_text = text_response.strip()
-    if clean_text.startswith("```json"):
-        clean_text = clean_text[7:]
-    if clean_text.startswith("```"):
-        clean_text = clean_text[3:]
-    if clean_text.endswith("```"):
-        clean_text = clean_text[:-3]
-        
-    return json.loads(clean_text.strip())
+
+def generate_json_with_fallback(*, contents, config) -> dict:
+    """
+    Retries both model-call failures and malformed JSON failures.
+    This is what Pico endpoints should use.
+    """
+    model_names = [
+        settings.GEMMA_PRIMARY_MODEL,
+        settings.GEMMA_FALLBACK_MODEL,
+    ]
+
+    tried = set()
+    failures = []
+
+    for model_name in model_names:
+        if not model_name or model_name in tried:
+            continue
+
+        tried.add(model_name)
+
+        try:
+            log_backend(f"[Gemma] Trying model: {model_name}")
+
+            response = client.models.generate_content(
+                model=model_name,
+                contents=contents,
+                config=config,
+            )
+
+            final_dict = response_to_dict(response)
+
+            if not isinstance(final_dict, dict):
+                raise ValueError("Model output was not a JSON object.")
+
+            log_backend(f"[Gemma] Model succeeded with valid JSON: {model_name}")
+            return final_dict
+
+        except Exception as exc:
+            failure_message = f"{model_name}: {exc}"
+            failures.append(failure_message)
+            log_backend(f"[Gemma] Model failed or returned invalid JSON: {failure_message}")
+
+    raise RuntimeError(
+        "All Gemma models failed or returned invalid JSON. "
+        + " | ".join(failures)
+    )
 
 def clean_item_name(value: Any, fallback: str = "Travel item") -> str:
     if not isinstance(value, str):
@@ -317,16 +424,15 @@ def handle_active_trip_node(state: AgentState) -> dict:
     User Query: {user_message}
     """
     
-    response = generate_content_with_fallback(
+    final_dict = generate_json_with_fallback(
         contents=prompt_text,
         config=types.GenerateContentConfig(
-            temperature=0.7, 
+            temperature=0.7,
             response_mime_type="application/json",
-            response_schema=PicoResponseSchema 
-        )
+            response_schema=PicoResponseSchema,
+        ),
     )
     
-    final_dict = parse_ai_json(response.text)
     action = final_dict.get("suggestionAction")
     
     if action and action.get("type") != "none":
@@ -432,17 +538,14 @@ def handle_new_trip_wizard_node(state: AgentState) -> dict:
     
     contents_list.append(prompt_text)
     
-    response = generate_content_with_fallback(
-        contents=contents_list,
-        config=types.GenerateContentConfig(
-            temperature=0.1, 
-            response_mime_type="application/json",
-            response_schema=PicoResponseSchema
-        )
-    )
-    
-    
-    final_dict = parse_ai_json(response.text)
+    final_dict = generate_json_with_fallback(
+    contents=contents_list,
+    config=types.GenerateContentConfig(
+        temperature=0.1,
+        response_mime_type="application/json",
+        response_schema=PicoResponseSchema,
+    ),
+)
 
     raw_ai_update = final_dict.get("updated_draft") or {}
     ai_updated_draft = {key: value for key, value in raw_ai_update.items() if value is not None}
@@ -557,16 +660,14 @@ def handle_general_travel_node(state: AgentState) -> dict:
     User Message: {user_message}
     """
     
-    response = generate_content_with_fallback(
+    final_dict = generate_json_with_fallback(
         contents=prompt_text,
         config=types.GenerateContentConfig(
-            temperature=0.6, 
+            temperature=0.6,
             response_mime_type="application/json",
-            response_schema=PicoResponseSchema
-        )
+            response_schema=PicoResponseSchema,
+        ),
     )
-    
-    final_dict = parse_ai_json(response.text)
     action = final_dict.get("suggestionAction")
     
     if action and action.get("type") != "none":

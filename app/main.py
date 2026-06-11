@@ -1,6 +1,7 @@
 import os
+import time
 import uvicorn
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from app.api.chat import router as chat_router
 from app.api.trip import router as trip_router
@@ -18,6 +19,39 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    started_at = time.time()
+
+    print(
+        f"[REQUEST START] {request.method} {request.url.path}",
+        flush=True,
+    )
+
+    try:
+        response = await call_next(request)
+
+        duration_ms = round((time.time() - started_at) * 1000)
+
+        print(
+            f"[REQUEST END] {request.method} {request.url.path} "
+            f"status={response.status_code} duration_ms={duration_ms}",
+            flush=True,
+        )
+
+        return response
+
+    except Exception as exc:
+        duration_ms = round((time.time() - started_at) * 1000)
+
+        print(
+            f"[REQUEST ERROR] {request.method} {request.url.path} "
+            f"duration_ms={duration_ms} error={exc}",
+            flush=True,
+        )
+
+        raise
 
 app.include_router(chat_router)
 app.include_router(trip_router)

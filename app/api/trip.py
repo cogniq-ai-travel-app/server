@@ -7,7 +7,7 @@ from google.genai import types
 
 from app.core.config import settings
 from app.models.schemas import PicoResponseSchema
-from app.agent.nodes import parse_ai_json, generate_content_with_fallback
+from app.agent.nodes import generate_json_with_fallback
 
 router = APIRouter()
 client = genai.Client(api_key=settings.GOOGLE_API_KEY)
@@ -28,7 +28,7 @@ class GenerateTripRequest(BaseModel):
 @router.post("/api/trip/generate")
 async def generate_trip_endpoint(request: GenerateTripRequest):
     try:
-        print(f"🚀 [TRIP EDITOR] Reviewing and enhancing list for {request.destination}")
+        print(f"🚀 [TRIP EDITOR] Reviewing and enhancing list for {request.destination}", flush=True)
         
         all_activities = request.activities + request.customActivities
 
@@ -61,16 +61,14 @@ async def generate_trip_endpoint(request: GenerateTripRequest):
         """
 
 
-        response = generate_content_with_fallback(
+        final_dict = generate_json_with_fallback(
             contents=prompt_text,
             config=types.GenerateContentConfig(
-                temperature=0.2, 
+                temperature=0.2,
                 response_mime_type="application/json",
-                response_schema=PicoResponseSchema
-            )
+                response_schema=PicoResponseSchema,
+            ),
         )
-
-        final_dict = parse_ai_json(response.text)
         
         if not final_dict or not final_dict.get("updated_draft"):
              raise ValueError("AI failed to generate a valid edited list.")
@@ -81,7 +79,7 @@ async def generate_trip_endpoint(request: GenerateTripRequest):
         return {"updated_draft": merged_draft}
 
     except Exception as e:
-        print(f"\n[TRIP GENERATION ERROR]: {str(e)}\n")
+        print(f"\n[TRIP GENERATION ERROR]: {str(e)}\n", flush=True)
         raise HTTPException(
             status_code=500, 
             detail=f"Failed to generate intelligent packing list: {str(e)}"
