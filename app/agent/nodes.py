@@ -1,5 +1,6 @@
 import json
 import re
+import time
 from google import genai
 from google.genai import types
 from app.core.config import settings
@@ -130,6 +131,7 @@ def generate_json_with_fallback(*, contents, config) -> dict:
         tried.add(model_name)
 
         try:
+            started_at = time.time()
             log_backend(f"[Gemma] Trying model: {model_name}")
 
             response = client.models.generate_content(
@@ -137,6 +139,9 @@ def generate_json_with_fallback(*, contents, config) -> dict:
                 contents=contents,
                 config=config,
             )
+
+            duration_ms = round((time.time() - started_at) * 1000)
+            log_backend(f"[Gemma] Raw model response received from {model_name} in {duration_ms}ms")
 
             final_dict = response_to_dict(response)
 
@@ -531,6 +536,12 @@ def handle_new_trip_wizard_node(state: AgentState) -> dict:
     - IF MISSING BASE FIELDS: If ANY base fields ({required_fields}) are still missing or null, set suggestionAction type to 'ask-question'. Write a warm 'content' bubble that asks for the NEXT missing field.
     - IF STARTING REVIEW: If ALL base fields are present and 'categories' is empty/null, GENERATE a complete packing list categorized into logical groups. 
     - Note: The Python backend will handle the category indexing. Just output the data.
+    
+    PACKING LIST SIZE CONTROL:
+    When generating categories, create exactly 5 categories.
+    Each category must contain 4 to 6 items only.
+    Keep item names short and practical.
+    Do not write long notes unless truly necessary.
     """
     
     if attachment and attachment.get("base64_data"):
