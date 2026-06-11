@@ -9,6 +9,34 @@ import base64
 
 client = genai.Client(api_key=settings.GOOGLE_API_KEY)
 
+def generate_content_with_fallback(*, contents, config):
+    model_names = [
+        settings.GEMMA_PRIMARY_MODEL,
+        settings.GEMMA_FALLBACK_MODEL,
+    ]
+
+    last_error = None
+    tried = set()
+
+    for model_name in model_names:
+        if not model_name or model_name in tried:
+            continue
+
+        tried.add(model_name)
+
+        try:
+            print(f"[Gemma] Trying model: {model_name}")
+            return client.models.generate_content(
+                model=model_name,
+                contents=contents,
+                config=config,
+            )
+        except Exception as exc:
+            last_error = exc
+            print(f"[Gemma] Model failed: {model_name} -> {exc}")
+
+    raise last_error or RuntimeError("No Gemma model was available.")
+
 def parse_ai_json(text_response: str) -> dict:
     """Safely strips markdown formatting blocks from LLM JSON outputs."""
     clean_text = text_response.strip()
@@ -20,6 +48,227 @@ def parse_ai_json(text_response: str) -> dict:
         clean_text = clean_text[:-3]
         
     return json.loads(clean_text.strip())
+
+def clean_item_name(value: Any, fallback: str = "Travel item") -> str:
+    if not isinstance(value, str):
+        return fallback
+
+    cleaned = value.strip()
+
+    lowered = cleaned.lower()
+    for prefix in ["name:", "item:", "object:"]:
+        if lowered.startswith(prefix):
+            cleaned = cleaned[len(prefix):].strip()
+            break
+
+    if not cleaned or cleaned.lower() in {"name", "item", "object"}:
+        return fallback
+
+    return " ".join(cleaned.split())
+
+
+def normalize_key(value: str) -> str:
+    return "".join(ch for ch in value.lower().strip() if ch.isalnum())
+
+
+def parse_list_line(line: str, prefix: str) -> list[str]:
+    if not line.lower().startswith(prefix.lower()):
+        return []
+
+    raw = line.split(":", 1)[1].strip()
+
+    if not raw or raw.lower() == "none":
+        return []
+
+    return [
+        clean_item_name(part.strip(), "")
+        for part in raw.split(",")
+        if clean_item_name(part.strip(), "")
+    ]
+
+
+def parse_category_review_message(message: str) -> Optional[dict]:
+    if not message.startswith("Category review complete:"):
+        return None
+
+    lines = [line.strip() for line in message.splitlines() if line.strip()]
+    if not lines:
+        return None
+
+    category_name = lines[0].replace("Category review complete:", "").strip()
+
+    keep: list[str] = []
+    remove: list[str] = []
+    add: list[str] = []
+
+    for line in lines[1:]:
+        if line.lower().startswith("keep:"):
+            keep = parse_list_line(line, "Keep")
+        elif line.lower().startswith("remove:"):
+            remove = parse_list_line(line, "Remove")
+        elif line.lower().startswith("add:"):
+            add = parse_list_line(line, "Add")
+
+    return {
+        "category_name": category_name,
+        "keep": keep,
+        "remove": remove,
+        "add": add,
+    }
+
+
+def clean_category_items(items: list[Any]) -> list[dict]:
+    cleaned_items = []
+
+    for index, item in enumerate(items):
+        if isinstance(item, str):
+            name = clean_item_name(item, "")
+            if name:
+                cleaned_items.append({
+                    "name": name,
+                    "quantity": 1,
+                    "priority": "useful",
+                    "notes": None,
+                })
+            continue
+
+        if isinstance(item, dict):
+            name = clean_item_name(item.get("name"), "")
+            if not name:
+                continue
+
+            cleaned_items.append({
+                **item,
+                "name": name,
+                "quantity": item.get("quantity") or 1,
+                "priority": item.get("priority") or "useful",
+            })
+
+    return cleaned_items
+
+
+def clean_categories(categories: list[Any]) -> list[dict]:
+    cleaned_categories = []
+
+    for index, category in enumerate(categories):
+        if not isinstance(category, dict):
+            continue
+
+        name = clean_item_name(category.get("name"), f"Category {index + 1}")
+        items = clean_category_items(category.get("items") or [])
+
+        if not items:
+            continue
+
+        cleaned_categories.append({
+            **category,
+            "name": name,
+            "items": items,
+        })
+
+    return cleaned_categories
+
+
+def build_review_action(category: dict, index: int, total: int) -> dict:
+    return {
+        "type": "review-category",
+        "label": f"Review {category.get('name')}",
+        "categoryName": category.get("name"),
+        "categoryIndex": index + 1,
+        "totalCategories": total,
+        "items": category.get("items", []),
+    }
+
+
+def handle_category_review_without_llm(draft: dict, user_message: str) -> Optional[dict]:
+    parsed = parse_category_review_message(user_message)
+
+    if not parsed:
+        return None
+
+    categories = clean_categories(draft.get("categories") or [])
+
+    if not categories:
+        return None
+
+    category_name = parsed["category_name"]
+    category_index = -1
+
+    for index, category in enumerate(categories):
+        if category.get("name", "").lower() == category_name.lower():
+            category_index = index
+            break
+
+    if category_index == -1:
+        return None
+
+    category = categories[category_index]
+    keep_keys = {normalize_key(name) for name in parsed["keep"]}
+    remove_keys = {normalize_key(name) for name in parsed["remove"]}
+
+    next_items = []
+
+    for item in category.get("items", []):
+        item_name = clean_item_name(item.get("name"), "")
+        item_key = normalize_key(item_name)
+
+        if keep_keys:
+            if item_key in keep_keys:
+                next_items.append({**item, "name": item_name})
+        elif item_key not in remove_keys:
+            next_items.append({**item, "name": item_name})
+
+    for added_name in parsed["add"]:
+        clean_name = clean_item_name(added_name, "")
+        if not clean_name:
+            continue
+
+        next_items.append({
+            "name": clean_name,
+            "quantity": 1,
+            "priority": "useful",
+            "notes": "Added during Pico review",
+        })
+
+    categories[category_index] = {
+        **category,
+        "items": next_items,
+    }
+
+    merged_draft = {
+        **draft,
+        "categories": categories,
+    }
+
+    next_index = category_index + 1
+
+    if next_index < len(categories):
+        next_category = categories[next_index]
+        final_response = {
+            "content": f"Saved! Let’s check {next_category.get('name')} next.",
+            "suggestionAction": build_review_action(
+                next_category,
+                next_index,
+                len(categories),
+            ),
+            "updated_draft": merged_draft,
+        }
+    else:
+        final_response = {
+            "content": "All categories are saved. Your packing list is ready!",
+            "suggestionAction": {
+                "type": "open-screen",
+                "label": "View My Trip",
+                "itemNames": [],
+                "kind": None,
+            },
+            "updated_draft": merged_draft,
+        }
+
+    return {
+        "current_draft": merged_draft,
+        "final_response": final_response,
+    }
 
 def handle_active_trip_node(state: AgentState) -> dict:
     """
@@ -68,8 +317,7 @@ def handle_active_trip_node(state: AgentState) -> dict:
     User Query: {user_message}
     """
     
-    response = client.models.generate_content(
-        model="gemma-4-31b-it",
+    response = generate_content_with_fallback(
         contents=prompt_text,
         config=types.GenerateContentConfig(
             temperature=0.7, 
@@ -114,6 +362,9 @@ def handle_new_trip_wizard_node(state: AgentState) -> dict:
     draft = state.get("current_draft") or payload.get("current_draft") or {}
     attachment = payload.get("attachment")
     user_message = payload.get("user_message", "")
+    deterministic_review = handle_category_review_without_llm(draft, user_message)
+    if deterministic_review:
+        return deterministic_review
     
     required_fields = ["destination", "tripVibe", "packingStyle", "startDate", "endDate", "fromLocation"]
     missing_fields = [field for field in required_fields if not draft.get(field)]
@@ -181,8 +432,7 @@ def handle_new_trip_wizard_node(state: AgentState) -> dict:
     
     contents_list.append(prompt_text)
     
-    response = client.models.generate_content(
-        model="gemma-4-31b-it",
+    response = generate_content_with_fallback(
         contents=contents_list,
         config=types.GenerateContentConfig(
             temperature=0.1, 
@@ -202,6 +452,9 @@ def handle_new_trip_wizard_node(state: AgentState) -> dict:
     
     action = final_dict.get("suggestionAction") or {}
     categories = merged_draft.get("categories") or []
+    categories = clean_categories(categories)
+    if categories:
+        merged_draft["categories"] = categories
 
     if still_missing:
         true_next_target = still_missing[0]
@@ -236,7 +489,7 @@ def handle_new_trip_wizard_node(state: AgentState) -> dict:
                 "totalCategories": len(categories),
                 "items": first_cat.get("items", [])
             }
-            final_dict["content"] = f"Awesome! I've put together your list. Let's review your items starting with {first_cat.get('name')}."
+            final_dict["content"] = f"Got it! I’ve built your packing list. Let me show you the first category: {first_cat.get('name')}."
 
         else:
             current_cat_name = None
@@ -304,8 +557,7 @@ def handle_general_travel_node(state: AgentState) -> dict:
     User Message: {user_message}
     """
     
-    response = client.models.generate_content(
-        model="gemma-4-31b-it",
+    response = generate_content_with_fallback(
         contents=prompt_text,
         config=types.GenerateContentConfig(
             temperature=0.6, 

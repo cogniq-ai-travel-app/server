@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from typing import List, Literal, Optional, Dict, Any
 
 
@@ -11,11 +11,41 @@ class GeneratedItem(BaseModel):
         description="The priority level of the item"
     )
     notes: Optional[str] = Field(default=None, description="Optional advice or context for this item")
+    @field_validator("name")
+    @classmethod
+    def clean_name(cls, value: str) -> str:
+        cleaned = value.strip()
+
+        lowered = cleaned.lower()
+        for prefix in ["name:", "item:", "object:"]:
+            if lowered.startswith(prefix):
+                cleaned = cleaned[len(prefix):].strip()
+                break
+
+        if not cleaned or cleaned.lower() in {"name", "item", "object"}:
+            return "Travel item"
+
+        return " ".join(cleaned.split())
 
 class GeneratedCategory(BaseModel):
     """A category containing multiple packing items."""
     name: str = Field(description="The name of the category (e.g., 'Clothing', 'Toiletries')")
     items: List[GeneratedItem] = Field(description="List of items belonging to this category")
+    @field_validator("name")
+    @classmethod
+    def clean_category_name(cls, value: str) -> str:
+        cleaned = value.strip()
+
+        lowered = cleaned.lower()
+        for prefix in ["name:", "category:", "title:"]:
+            if lowered.startswith(prefix):
+                cleaned = cleaned[len(prefix):].strip()
+                break
+
+        if not cleaned or cleaned.lower() in {"name", "category", "title"}:
+            return "Packing"
+
+        return " ".join(cleaned.split())
 
 
 class TripDraftConfig(BaseModel):

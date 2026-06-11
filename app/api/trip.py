@@ -7,7 +7,7 @@ from google.genai import types
 
 from app.core.config import settings
 from app.models.schemas import PicoResponseSchema
-from app.agent.nodes import parse_ai_json
+from app.agent.nodes import parse_ai_json, generate_content_with_fallback
 
 router = APIRouter()
 client = genai.Client(api_key=settings.GOOGLE_API_KEY)
@@ -61,8 +61,7 @@ async def generate_trip_endpoint(request: GenerateTripRequest):
         """
 
 
-        response = client.models.generate_content(
-            model="gemma-4-31b-it", 
+        response = generate_content_with_fallback(
             contents=prompt_text,
             config=types.GenerateContentConfig(
                 temperature=0.2, 
