@@ -22,8 +22,8 @@ class GeneratedItem(BaseModel):
                 cleaned = cleaned[len(prefix):].strip()
                 break
 
-        if not cleaned or cleaned.lower() in {"name", "item", "object"}:
-            return "Travel item"
+        if not cleaned or cleaned.lower() in {"name", "item", "object", "travel item"}:
+            return ""
 
         return " ".join(cleaned.split())
 
@@ -60,6 +60,16 @@ class TripDraftConfig(BaseModel):
     categories: Optional[List[GeneratedCategory]] = Field(
         default=None, 
         description="The fully generated packing categories and items. Populate this when the draft is complete."
+    )
+    
+    picoReviewStatus: Optional[Literal["reviewing", "readyToSave"]] = Field(
+        default=None,
+        description="Internal Ask Pico review status for the generated packing list.",
+    )
+
+    picoReviewIndex: Optional[int] = Field(
+        default=None,
+        description="Zero-based index of the category currently being reviewed.",
     )
 
 
@@ -126,6 +136,10 @@ class SuggestionAction(BaseModel):
     kind: Optional[Literal['general', 'almostForgot']] = Field(
         default=None,
         description="Optional tag categorization for tracking specific feature workflows"
+    )
+    route: Optional[str] = Field(
+        default=None,
+        description="Optional frontend route for open-screen actions.",
     )
     
 

@@ -1,6 +1,7 @@
 import json
 import re
 import time
+from datetime import date, datetime
 from google import genai
 from google.genai import types
 from app.core.config import settings
@@ -173,7 +174,7 @@ def clean_item_name(value: Any, fallback: str = "Travel item") -> str:
             cleaned = cleaned[len(prefix):].strip()
             break
 
-    if not cleaned or cleaned.lower() in {"name", "item", "object"}:
+    if not cleaned or cleaned.lower() in {"name", "item", "object", "travel item"}:
         return fallback
 
     return " ".join(cleaned.split())
@@ -290,6 +291,216 @@ def build_review_action(category: dict, index: int, total: int) -> dict:
         "totalCategories": total,
         "items": category.get("items", []),
     }
+    
+def normalize_iso_date_to_upcoming(value: Any) -> Any:
+    if not isinstance(value, str):
+        return value
+
+    try:
+        parsed = datetime.strptime(value, "%Y-%m-%d").date()
+    except ValueError:
+        return value
+
+    today = date.today()
+
+    if parsed >= today:
+        return parsed.isoformat()
+
+    candidate = parsed.replace(year=today.year)
+
+    if candidate < today:
+        candidate = candidate.replace(year=today.year + 1)
+
+    return candidate.isoformat()
+
+
+def normalize_trip_dates_in_draft(draft: dict) -> dict:
+    next_draft = dict(draft)
+
+    start_date = normalize_iso_date_to_upcoming(next_draft.get("startDate"))
+    end_date = normalize_iso_date_to_upcoming(next_draft.get("endDate"))
+
+    if isinstance(start_date, str):
+        next_draft["startDate"] = start_date
+
+    if isinstance(end_date, str):
+        next_draft["endDate"] = end_date
+
+    if (
+        isinstance(next_draft.get("startDate"), str)
+        and isinstance(next_draft.get("endDate"), str)
+        and next_draft["endDate"] < next_draft["startDate"]
+    ):
+        try:
+            end_as_date = datetime.strptime(next_draft["endDate"], "%Y-%m-%d").date()
+            next_draft["endDate"] = end_as_date.replace(
+                year=end_as_date.year + 1
+            ).isoformat()
+        except ValueError:
+            pass
+
+    return next_draft
+
+
+def get_review_index(draft: dict) -> int:
+    raw_index = draft.get("picoReviewIndex")
+
+    if isinstance(raw_index, int):
+        return max(0, raw_index)
+
+    try:
+        return max(0, int(raw_index))
+    except Exception:
+        return 0
+
+
+def make_review_response(draft: dict, index: int, content: str) -> dict:
+    categories = clean_categories(draft.get("categories") or [])
+
+    if not categories:
+        return {
+            "current_draft": draft,
+            "final_response": {
+                "content": "I need to rebuild the packing categories before we continue.",
+                "suggestionAction": {
+                    "type": "ask-question",
+                    "label": "Continue planning",
+                    "itemNames": [],
+                    "kind": None,
+                },
+                "updated_draft": draft,
+            },
+        }
+
+    safe_index = min(max(index, 0), len(categories) - 1)
+    category = categories[safe_index]
+
+    next_draft = {
+        **draft,
+        "categories": categories,
+        "picoReviewStatus": "reviewing",
+        "picoReviewIndex": safe_index,
+    }
+
+    return {
+        "current_draft": next_draft,
+        "final_response": {
+            "content": content,
+            "suggestionAction": build_review_action(
+                category,
+                safe_index,
+                len(categories),
+            ),
+            "updated_draft": next_draft,
+        },
+    }
+
+
+def make_final_trip_response(draft: dict) -> dict:
+    categories = clean_categories(draft.get("categories") or [])
+
+    next_draft = normalize_trip_dates_in_draft({
+        **draft,
+        "categories": categories,
+        "picoReviewStatus": "readyToSave",
+        "picoReviewIndex": len(categories),
+    })
+
+    destination = next_draft.get("destination") or "your trip"
+
+    return {
+        "current_draft": next_draft,
+        "final_response": {
+            "content": (
+                f"I’ve got all your trip details locked in. "
+                f"You’re going to have an amazing time exploring {destination}, "
+                "and your packing list is ready to save."
+            ),
+            "suggestionAction": {
+                "type": "open-screen",
+                "label": "Add to Active Trips",
+                "route": "/(tabs)/pack",
+                "itemNames": [],
+                "kind": None,
+            },
+            "updated_draft": next_draft,
+        },
+    }
+
+
+def default_items_for_category(category_name: str, draft: dict) -> list[dict]:
+    destination = draft.get("destination") or "your destination"
+
+    defaults = {
+        "Clothing": [
+            {"name": "Comfortable outfits", "quantity": 4, "priority": "critical"},
+            {"name": "Walking shoes", "quantity": 1, "priority": "critical"},
+            {"name": "Light jacket", "quantity": 1, "priority": "useful"},
+            {"name": "Sleepwear", "quantity": 2, "priority": "useful"},
+        ],
+        "Toiletries": [
+            {"name": "Toothbrush", "quantity": 1, "priority": "critical"},
+            {"name": "Toothpaste", "quantity": 1, "priority": "critical"},
+            {"name": "Deodorant", "quantity": 1, "priority": "critical"},
+            {"name": "Skincare basics", "quantity": 1, "priority": "useful"},
+        ],
+        "Electronics": [
+            {"name": "Phone charger", "quantity": 1, "priority": "critical"},
+            {"name": "Power bank", "quantity": 1, "priority": "critical"},
+            {"name": "Universal adapter", "quantity": 1, "priority": "critical"},
+            {"name": "Charging cables", "quantity": 2, "priority": "useful"},
+        ],
+        "Documents": [
+            {"name": "Passport", "quantity": 1, "priority": "critical"},
+            {"name": "Visa or entry permit", "quantity": 1, "priority": "critical"},
+            {"name": "Travel insurance", "quantity": 1, "priority": "critical"},
+            {"name": "Flight tickets", "quantity": 1, "priority": "critical"},
+        ],
+        "Trip Extras": [
+            {"name": "Reusable water bottle", "quantity": 1, "priority": "useful"},
+            {"name": "Small daypack", "quantity": 1, "priority": "useful"},
+            {"name": "Umbrella", "quantity": 1, "priority": "useful"},
+            {
+                "name": f"{destination} notes",
+                "quantity": 1,
+                "priority": "optional",
+            },
+        ],
+    }
+
+    return defaults.get(category_name, [])
+
+
+def supplement_missing_categories(draft: dict, categories: list[dict]) -> list[dict]:
+    required_names = [
+        "Clothing",
+        "Toiletries",
+        "Electronics",
+        "Documents",
+        "Trip Extras",
+    ]
+
+    cleaned_categories = clean_categories(categories)
+    existing_names = {
+        normalize_key(category.get("name", ""))
+        for category in cleaned_categories
+    }
+
+    final_categories = list(cleaned_categories)
+
+    for category_name in required_names:
+        if len(final_categories) >= 5:
+            break
+
+        if normalize_key(category_name) in existing_names:
+            continue
+
+        final_categories.append({
+            "name": category_name,
+            "items": default_items_for_category(category_name, draft),
+        })
+
+    return clean_categories(final_categories[:5])
 
 
 def handle_category_review_without_llm(draft: dict, user_message: str) -> Optional[dict]:
@@ -312,7 +523,11 @@ def handle_category_review_without_llm(draft: dict, user_message: str) -> Option
             break
 
     if category_index == -1:
-        return None
+        return make_review_response(
+            draft,
+            get_review_index(draft),
+            "Let’s continue with the category currently on screen.",
+        )
 
     category = categories[category_index]
     keep_keys = {normalize_key(name) for name in parsed["keep"]}
@@ -323,6 +538,9 @@ def handle_category_review_without_llm(draft: dict, user_message: str) -> Option
     for item in category.get("items", []):
         item_name = clean_item_name(item.get("name"), "")
         item_key = normalize_key(item_name)
+
+        if not item_name:
+            continue
 
         if keep_keys:
             if item_key in keep_keys:
@@ -347,40 +565,25 @@ def handle_category_review_without_llm(draft: dict, user_message: str) -> Option
         "items": next_items,
     }
 
-    merged_draft = {
+    merged_draft = normalize_trip_dates_in_draft({
         **draft,
         "categories": categories,
-    }
+    })
 
     next_index = category_index + 1
 
     if next_index < len(categories):
-        next_category = categories[next_index]
-        final_response = {
-            "content": f"Saved! Let’s check {next_category.get('name')} next.",
-            "suggestionAction": build_review_action(
-                next_category,
-                next_index,
-                len(categories),
-            ),
-            "updated_draft": merged_draft,
-        }
-    else:
-        final_response = {
-            "content": "All categories are saved. Your packing list is ready!",
-            "suggestionAction": {
-                "type": "open-screen",
-                "label": "View My Trip",
-                "itemNames": [],
-                "kind": None,
+        return make_review_response(
+            {
+                **merged_draft,
+                "picoReviewIndex": next_index,
+                "picoReviewStatus": "reviewing",
             },
-            "updated_draft": merged_draft,
-        }
+            next_index,
+            f"Saved! Let’s check {categories[next_index].get('name')} next.",
+        )
 
-    return {
-        "current_draft": merged_draft,
-        "final_response": final_response,
-    }
+    return make_final_trip_response(merged_draft)
 
 def handle_active_trip_node(state: AgentState) -> dict:
     """
@@ -470,12 +673,37 @@ def handle_new_trip_wizard_node(state: AgentState) -> dict:
     
     payload = state.get("request_payload") or {}
     
-    draft = state.get("current_draft") or payload.get("current_draft") or {}
+    draft = normalize_trip_dates_in_draft(
+        state.get("current_draft") or payload.get("current_draft") or {}
+    )
     attachment = payload.get("attachment")
     user_message = payload.get("user_message", "")
+
     deterministic_review = handle_category_review_without_llm(draft, user_message)
     if deterministic_review:
-        return deterministic_review
+       return deterministic_review
+
+    existing_categories = clean_categories(draft.get("categories") or [])
+    if existing_categories:
+        review_status = draft.get("picoReviewStatus")
+        review_index = get_review_index(draft)
+
+        if review_status == "readyToSave" or review_index >= len(existing_categories):
+            return make_final_trip_response({
+                **draft,
+                "categories": existing_categories,
+            })
+
+        return make_review_response(
+            {
+                **draft,
+                "categories": existing_categories,
+                "picoReviewStatus": "reviewing",
+                "picoReviewIndex": review_index,
+            },
+            review_index,
+            f"Let’s continue with {existing_categories[review_index].get('name')}.",
+        )
     
     required_fields = ["destination", "tripVibe", "packingStyle", "startDate", "endDate", "fromLocation"]
     missing_fields = [field for field in required_fields if not draft.get(field)]
@@ -498,9 +726,14 @@ def handle_new_trip_wizard_node(state: AgentState) -> dict:
             print(f"[Backend Error] Failed parsing attachment stream: {err}")
 
     current_focus = missing_fields[0] if missing_fields else "Category Generation & Review"
+    today_iso = date.today().isoformat()
     
     prompt_text = f"""
     You are Pico, the friendly trip setup assistant.
+    
+    Today's date is {today_iso}.
+    If the user gives dates without a year, infer the next upcoming valid date range.
+    Never output past dates for a new trip.
     
     Current Trip Draft Memory: {json.dumps(draft)}
     What we still need: {missing_fields}
@@ -591,59 +824,21 @@ def handle_new_trip_wizard_node(state: AgentState) -> dict:
             target_clean = true_next_target.replace("trip", "")
             final_dict["content"] = f"Just to make sure my systems have it locked in perfectly, what is your {target_clean}?"
 
-    elif categories:
+        elif categories:
+            categories = supplement_missing_categories(merged_draft, categories)
 
-        if not draft.get("categories"):
-            first_cat = categories[0]
-            final_dict["suggestionAction"] = {
-                "type": "review-category",
-                "label": f"Review {first_cat.get('name')}",
-                "categoryName": first_cat.get("name"),
-                "categoryIndex": 1,
-                "totalCategories": len(categories),
-                "items": first_cat.get("items", [])
-            }
-            final_dict["content"] = f"Got it! I’ve built your packing list. Let me show you the first category: {first_cat.get('name')}."
+            merged_draft = normalize_trip_dates_in_draft({
+                **merged_draft,
+                "categories": categories,
+                "picoReviewStatus": "reviewing",
+                "picoReviewIndex": 0,
+            })
 
-        else:
-            current_cat_name = None
-            
-            if "Category review complete:" in user_message:
-                first_line = user_message.split("\n")[0]
-                current_cat_name = first_line.replace("Category review complete:", "").strip()
-                
-            if not current_cat_name:
-                current_cat_name = action.get("categoryName")
-
-            if current_cat_name:
-                current_index = -1
-                for idx, cat in enumerate(categories):
-                    if cat.get("name", "").lower() == current_cat_name.lower():
-                        current_index = idx
-                        break
-                
-                next_index = current_index + 1
-                if current_index != -1:
-                    if next_index < len(categories):
-                        
-                        next_cat = categories[next_index]
-                        final_dict["suggestionAction"] = {
-                            "type": "review-category",
-                            "label": f"Review {next_cat.get('name')}",
-                            "categoryName": next_cat.get("name"),
-                            "categoryIndex": next_index + 1,
-                            "totalCategories": len(categories),
-                            "items": next_cat.get("items", [])
-                        }
-                        final_dict["content"] = f"Saved! Let's check the next category: {next_cat.get('name')}."
-                    else:
-                        final_dict["suggestionAction"] = {
-                            "type": "open-screen",
-                            "label": "View My Trip",
-                            "itemNames": [],
-                            "kind": None
-                        }
-                        final_dict["content"] = "All done! Your packing list is perfectly curated and ready."
+            return make_review_response(
+                merged_draft,
+                0,
+                f"Got it! I’ve built your packing list. Let me show you the first category: {categories[0].get('name')}.",
+            )
 
     final_dict["updated_draft"] = merged_draft
 
