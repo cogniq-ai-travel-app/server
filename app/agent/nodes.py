@@ -174,8 +174,12 @@ def clean_item_name(value: Any, fallback: str = "Travel item") -> str:
             cleaned = cleaned[len(prefix):].strip()
             break
 
-    if not cleaned or cleaned.lower() in {"name", "item", "object", "travel item"}:
-        return fallback
+    if (
+    not cleaned
+    or cleaned.lower() in {"name", "item", "object", "travel item"}
+    or re.fullmatch(r"item\s*\d+", cleaned.lower())
+    ):
+     return fallback
 
     return " ".join(cleaned.split())
 
@@ -245,17 +249,27 @@ def clean_category_items(items: list[Any]) -> list[dict]:
                 })
             continue
 
-        if isinstance(item, dict):
-            name = clean_item_name(item.get("name"), "")
-            if not name:
-                continue
+        if hasattr(item, "model_dump"):
+          item = item.model_dump()
 
-            cleaned_items.append({
-                **item,
-                "name": name,
-                "quantity": item.get("quantity") or 1,
-                "priority": item.get("priority") or "useful",
-            })
+        if isinstance(item, dict):
+          name = clean_item_name(item.get("name"), "")
+          if not name:
+            continue
+
+        raw_quantity = item.get("quantity")
+        quantity = raw_quantity if isinstance(raw_quantity, int) and raw_quantity > 0 else 1
+
+        priority = item.get("priority")
+        if priority not in {"critical", "useful", "optional"}:
+            priority = "useful"
+
+        cleaned_items.append({
+            **item,
+            "name": name,
+            "quantity": quantity,
+            "priority": priority,
+        })
 
     return cleaned_items
 
@@ -481,6 +495,11 @@ def supplement_missing_categories(draft: dict, categories: list[dict]) -> list[d
     ]
 
     cleaned_categories = clean_categories(categories)
+    cleaned_categories = [
+    category
+    for category in cleaned_categories
+    if category.get("items") and len(category.get("items", [])) >= 2
+    ]
     existing_names = {
         normalize_key(category.get("name", ""))
         for category in cleaned_categories
@@ -685,6 +704,8 @@ def handle_new_trip_wizard_node(state: AgentState) -> dict:
 
     existing_categories = clean_categories(draft.get("categories") or [])
     if existing_categories:
+        existing_categories = supplement_missing_categories(draft, existing_categories)
+
         review_status = draft.get("picoReviewStatus")
         review_index = get_review_index(draft)
 
@@ -694,6 +715,8 @@ def handle_new_trip_wizard_node(state: AgentState) -> dict:
                 "categories": existing_categories,
             })
 
+        # If categories already exist, do not let the LLM restart or rewrite the flow.
+        # Only continue from the saved review index.
         return make_review_response(
             {
                 **draft,
@@ -767,8 +790,12 @@ def handle_new_trip_wizard_node(state: AgentState) -> dict:
     
     - IF ATTACHMENT JUST PROCESSED: If you just extracted data from an attachment, set suggestionAction to 'ask-question'. Write a conversational bubble summarizing the data you extracted and ask if it looks correct before moving forward. Do NOT generate categories yet.
     - IF MISSING BASE FIELDS: If ANY base fields ({required_fields}) are still missing or null, set suggestionAction type to 'ask-question'. Write a warm 'content' bubble that asks for the NEXT missing field.
-    - IF STARTING REVIEW: If ALL base fields are present and 'categories' is empty/null, GENERATE a complete packing list categorized into logical groups. 
-    - Note: The Python backend will handle the category indexing. Just output the data.
+    - IF STARTING REVIEW: If ALL base fields are present and 'categories' is empty/null, GENERATE a complete packing list categorized into logical groups.
+    - Do NOT decide which category is shown first.
+    - Do NOT set the final trip card yourself.
+    - Do NOT output open-screen while categories are being created.
+    - The Python backend will handle category ordering, review status, category index, and final card timing.
+    - Your job here is only to return the completed updated_draft.categories data.  
     
     PACKING LIST SIZE CONTROL:
     When generating categories, create exactly 5 categories.
@@ -806,39 +833,64 @@ def handle_new_trip_wizard_node(state: AgentState) -> dict:
     if still_missing:
         true_next_target = still_missing[0]
         is_invalid_action = action.get("type") in ["open-screen", "review-category", "none"]
-        
-        ai_skipped_saving = action.get("type") == "ask-question" and current_focus in still_missing and user_message.strip()
-        
-        is_attachment_confirmation = attachment is not None and action.get("type") == "ask-question"
+
+        ai_skipped_saving = (
+            action.get("type") == "ask-question"
+            and current_focus in still_missing
+            and user_message.strip()
+        )
+
+        is_attachment_confirmation = (
+            attachment is not None and action.get("type") == "ask-question"
+        )
 
         if (is_invalid_action or ai_skipped_saving) and not is_attachment_confirmation:
-            print(f"⚠️ [GUARDRAIL] Intercepted LLM. Missing: {still_missing}. Forcing target: {true_next_target}")
-            
+            print(
+                f"⚠️ [GUARDRAIL] Intercepted LLM. Missing: {still_missing}. "
+                f"Forcing target: {true_next_target}",
+                flush=True,
+            )
+
             final_dict["suggestionAction"] = {
                 "type": "ask-question",
                 "label": f"Provide {true_next_target}",
                 "itemNames": [],
-                "kind": None
+                "kind": None,
             }
-            
+
             target_clean = true_next_target.replace("trip", "")
-            final_dict["content"] = f"Just to make sure my systems have it locked in perfectly, what is your {target_clean}?"
-
-        elif categories:
-            categories = supplement_missing_categories(merged_draft, categories)
-
-            merged_draft = normalize_trip_dates_in_draft({
-                **merged_draft,
-                "categories": categories,
-                "picoReviewStatus": "reviewing",
-                "picoReviewIndex": 0,
-            })
-
-            return make_review_response(
-                merged_draft,
-                0,
-                f"Got it! I’ve built your packing list. Let me show you the first category: {categories[0].get('name')}.",
+            final_dict["content"] = (
+                f"Just to make sure I have it right, what is your {target_clean}?"
             )
+
+            final_dict["updated_draft"] = merged_draft
+
+            return {
+                "current_draft": merged_draft,
+                "final_response": final_dict,
+            }
+
+    # Important: this must be OUTSIDE the still_missing block.
+    # If all required trip fields are present and categories exist,
+    # start the deterministic one-by-one category review flow.
+    if categories:
+        categories = supplement_missing_categories(merged_draft, categories)
+
+        merged_draft = normalize_trip_dates_in_draft({
+            **merged_draft,
+            "categories": categories,
+            "picoReviewStatus": "reviewing",
+            "picoReviewIndex": 0,
+        })
+
+        return make_review_response(
+            merged_draft,
+            0,
+            (
+                "I’ve got all the trip details I need. "
+                f"I’ve built your packing list, starting with {categories[0].get('name')}."
+            ),
+        )
 
     final_dict["updated_draft"] = merged_draft
 
