@@ -6,7 +6,7 @@ from google import genai
 from google.genai import types
 
 from app.core.config import settings
-from app.models.schemas import PicoResponseSchema
+from app.models.schemas import PicoResponseSchema, GeneratedCategory
 from app.agent.nodes import generate_json_with_fallback
 
 router = APIRouter()
@@ -24,6 +24,11 @@ class GenerateTripRequest(BaseModel):
     activities: List[str] = []
     customActivities: List[str] = []
     baseline_categories: List[Dict[str, Any]] = [] 
+
+
+class TripCategoriesSchema(BaseModel):
+    categories: List[GeneratedCategory]
+
 
 @router.post("/api/trip/generate")
 async def generate_trip_endpoint(request: GenerateTripRequest):
@@ -56,9 +61,8 @@ async def generate_trip_endpoint(request: GenerateTripRequest):
         CRITICAL INSTRUCTION: You MUST process and include all relevant categories (such as Documents, Clothing, Toiletries, Electronics, Health, etc.) in your output. Do NOT skip or omit entire categories from the baseline list unless they are completely irrelevant to the trip. For example, the user always needs Clothing and Toiletries; you must not omit them.
 
         CRITICAL OUTPUT RULES:
-        - Return ONLY a valid JSON object matching the 'updated_draft' section of the PicoResponseSchema.
-        - You must populate the 'categories' array inside 'updated_draft' with the final, edited list.
-        - Set 'suggestionAction' to type 'none'.
+        - Return ONLY a valid JSON object matching the TripCategoriesSchema schema (containing a 'categories' list of categories and items).
+        - You must populate the 'categories' array with the final, edited list.
         - FORMATTING STRICT RULE: When generating the 'name' field for an item, provide ONLY the raw item name. Do NOT prefix the string with "name: " or any other label (e.g., output "Deodorant", NOT "name: Deodorant").
         """
 
@@ -68,14 +72,14 @@ async def generate_trip_endpoint(request: GenerateTripRequest):
             config=types.GenerateContentConfig(
                 temperature=0.2,
                 response_mime_type="application/json",
-                response_schema=PicoResponseSchema,
+                response_schema=TripCategoriesSchema,
             ),
         )
         
-        if not final_dict or not final_dict.get("updated_draft"):
+        if not final_dict or not final_dict.get("categories"):
              raise ValueError("AI failed to generate a valid edited list.")
              
-        ai_categories = final_dict["updated_draft"].get("categories", [])
+        ai_categories = final_dict.get("categories", [])
         if not isinstance(ai_categories, list):
             ai_categories = []
 
