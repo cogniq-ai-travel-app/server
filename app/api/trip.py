@@ -10,7 +10,10 @@ from app.models.schemas import PicoResponseSchema, GeneratedCategory
 from app.agent.nodes import generate_json_with_fallback
 
 router = APIRouter()
-client = genai.Client(api_key=settings.GOOGLE_API_KEY)
+client = genai.Client(
+    api_key=settings.GOOGLE_API_KEY,
+    http_options=types.HttpOptions(timeout=90000)
+)
 
 
 class GenerateTripRequest(BaseModel):
