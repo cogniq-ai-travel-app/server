@@ -12,7 +12,7 @@ import base64
 
 client = genai.Client(
     api_key=settings.GOOGLE_API_KEY,
-    http_options=types.HttpOptions(timeout=30.0)
+    http_options=types.HttpOptions(timeout=30000)
 )
 
 
