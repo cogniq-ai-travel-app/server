@@ -10,7 +10,10 @@ from app.agent.state import AgentState
 from typing import Dict, Any, Optional
 import base64
 
-client = genai.Client(api_key=settings.GOOGLE_API_KEY)
+client = genai.Client(
+    api_key=settings.GOOGLE_API_KEY,
+    http_options=types.HttpOptions(timeout=30.0)
+)
 
 
 def log_backend(message: str):
@@ -98,16 +101,20 @@ def generate_content_with_fallback(*, contents, config):
 
         tried.add(model_name)
 
-        try:
-            log_backend(f"[Gemma] Trying model: {model_name}")
-            return client.models.generate_content(
-                model=model_name,
-                contents=contents,
-                config=config,
-            )
-        except Exception as exc:
-            last_error = exc
-            log_backend(f"[Gemma] Model failed: {model_name} -> {exc}")
+        # Try each model up to 2 times (1 initial try + 1 retry)
+        for attempt in range(2):
+            try:
+                log_backend(f"[Gemma] Trying model: {model_name} (attempt {attempt + 1}/2)")
+                return client.models.generate_content(
+                    model=model_name,
+                    contents=contents,
+                    config=config,
+                )
+            except Exception as exc:
+                last_error = exc
+                log_backend(f"[Gemma] Model attempt failed: {model_name} (attempt {attempt + 1}/2) -> {exc}")
+                if attempt == 0:
+                    time.sleep(1)
 
     raise last_error or RuntimeError("No Gemma model was available.")
 
@@ -131,31 +138,36 @@ def generate_json_with_fallback(*, contents, config) -> dict:
 
         tried.add(model_name)
 
-        try:
-            started_at = time.time()
-            log_backend(f"[Gemma] Trying model: {model_name}")
+        # Try each model up to 2 times (1 initial try + 1 retry)
+        for attempt in range(2):
+            try:
+                started_at = time.time()
+                log_backend(f"[Gemma] Trying model: {model_name} (attempt {attempt + 1}/2)")
 
-            response = client.models.generate_content(
-                model=model_name,
-                contents=contents,
-                config=config,
-            )
+                response = client.models.generate_content(
+                    model=model_name,
+                    contents=contents,
+                    config=config,
+                )
 
-            duration_ms = round((time.time() - started_at) * 1000)
-            log_backend(f"[Gemma] Raw model response received from {model_name} in {duration_ms}ms")
+                duration_ms = round((time.time() - started_at) * 1000)
+                log_backend(f"[Gemma] Raw model response received from {model_name} in {duration_ms}ms (attempt {attempt + 1}/2)")
 
-            final_dict = response_to_dict(response)
+                final_dict = response_to_dict(response)
 
-            if not isinstance(final_dict, dict):
-                raise ValueError("Model output was not a JSON object.")
+                if not isinstance(final_dict, dict):
+                    raise ValueError("Model output was not a JSON object.")
 
-            log_backend(f"[Gemma] Model succeeded with valid JSON: {model_name}")
-            return final_dict
+                log_backend(f"[Gemma] Model succeeded with valid JSON: {model_name}")
+                return final_dict
 
-        except Exception as exc:
-            failure_message = f"{model_name}: {exc}"
-            failures.append(failure_message)
-            log_backend(f"[Gemma] Model failed or returned invalid JSON: {failure_message}")
+            except Exception as exc:
+                failure_message = f"{model_name} (attempt {attempt + 1}/2): {exc}"
+                log_backend(f"[Gemma] Model attempt failed or returned invalid JSON: {failure_message}")
+                if attempt == 1:
+                    failures.append(f"{model_name}: {exc}")
+                else:
+                    time.sleep(1)
 
     raise RuntimeError(
         "All Gemma models failed or returned invalid JSON. "
