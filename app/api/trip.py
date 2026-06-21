@@ -54,9 +54,11 @@ async def generate_trip_endpoint(request: GenerateTripRequest):
         4. Organize the final items into logical categories.
 
         CRITICAL OUTPUT RULES:
-        - Return ONLY a valid JSON object matching the 'updated_draft' section of the PicoResponseSchema.
-        - You must populate the 'categories' array inside 'updated_draft' with the final, edited list.
-        - Set 'suggestionAction' to type 'none'.
+        - You must return a valid JSON object matching the PicoResponseSchema structure, including "content", "suggestionAction", and "updated_draft".
+        - In "content", write a brief, friendly, mascot-toned message explaining what Pico adjusted in the list.
+        - In "suggestionAction", set type to "none" and other fields to default empty values.
+        - In "updated_draft", you MUST populate the "categories" list with the final edited categories and items.
+        - CATEGORY PRESERVATION RULE: Do NOT drop entire categories (like Clothing, Toiletries, Electronics, or Health) from the baseline list. A traveler always needs clothes, toiletries, and electronic accessories. Keep them, and refine/adjust their contents.
         - FORMATTING STRICT RULE: When generating the 'name' field for an item, provide ONLY the raw item name. Do NOT prefix the string with "name: " or any other label (e.g., output "Deodorant", NOT "name: Deodorant").
         """
 
