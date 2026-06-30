@@ -163,6 +163,14 @@ def sanitize_ai_response(payload: dict) -> dict:
     # 2. Clean and deduplicate 'suggestionAction' itemNames (for active trips)
     action = sanitized.get("suggestionAction")
     if action and isinstance(action, dict):
+        if action.get("type") == "add-items" and action.get("label") == "Left to Pack":
+            action["type"] = "unpacked-checklist"
+            clean_names = []
+            for name in action.get("itemNames", []):
+                clean_name = re.sub(r"\s*\([+xX]?\s*\d+\)$", "", name).strip()
+                clean_names.append(clean_name)
+            action["itemNames"] = clean_names
+
         item_names = action.get("itemNames")
         if item_names and isinstance(item_names, list):
             clean_names = []

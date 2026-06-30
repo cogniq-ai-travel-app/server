@@ -122,7 +122,7 @@ class SuggestionAction(BaseModel):
     The actionable data block that tells the React Native UI to render a clickable chip.
     """
 
-    type: Literal['add-items', 'remove-items', 'open-screen', 'none', 'ask-question', 'review-category'] = Field(
+    type: Literal['add-items', 'remove-items', 'open-screen', 'none', 'ask-question', 'review-category', 'unpacked-checklist'] = Field(
         default='none',
         description="The action type execution rule. Use 'ask-question' for missing info, 'review-category' for category approval."
     )
@@ -132,7 +132,7 @@ class SuggestionAction(BaseModel):
     )
     itemNames: List[str] = Field(
         default=[],
-        description="An array of missing item names to inject into the checklist"
+        description="An array of item names to display in the UI (used for adding, removing, or checking off items)."
     )
     kind: Optional[Literal['general', 'almostForgot']] = Field(
         default=None,

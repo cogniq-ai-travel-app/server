@@ -684,15 +684,20 @@ def handle_active_trip_node(state: AgentState) -> dict:
     - Always cross-check the existing quantity in Packed Items or Unpacked Items before computing any delta. Never guess if the real quantity is visible in the Suitcase State.
 
     ACTION 3: REMOVING OR REDUCING ITEMS (type: "remove-items")
-    - Triggered if the user wants to completely REMOVE an item OR REDUCE its quantity.
+    - Triggered if the user wants to completely REMOVE an item, REDUCE its quantity, OR asks generally to "pack lighter" / "help me downsize".
     - Suggest items STRICTLY from the existing Suitcase State. 
-    - YOU MUST ALWAYS USE THE FORMAT "ItemName (-Quantity)".
-    - If completely removing an item that currently has a quantity of 1, output "Heavy Coat (-1)".
-    - If reducing the quantity, specify the amount to SUBTRACT (e.g., "Jeans (-1)").
-    - Provide these items in the "itemNames" array.
+    - YOU MUST ALWAYS USE THE FORMAT "ItemName (-Quantity)". ABSOLUTELY NO PLUS SIGNS (+N) ARE ALLOWED IN THIS ACTION.
 
-    *QUANTITY ACCURACY RULE (REMOVAL)*: The same delta logic from ACTION 2 applies here. Never subtract more than the item's actual current quantity in the Suitcase State, and never output a (-N) value that would make the quantity go negative. If the user asks to remove more than exists, cap the value at the actual current quantity and remove the item entirely (treat as full removal).
-
+    *SMART REDUCTION & PACK LIGHTER LOGIC*: 
+    If the user asks to pack lighter, think like a practical human traveler before suggesting removals:
+    1. PROTECT ESSENTIALS (THE SURVIVAL BASELINE): NEVER suggest removing the entirety of critical items (e.g., Tops, Underwear, Bottoms, Passports, sole phone chargers). If they have 7 Tops for a 6-day trip, suggest removing 1 or 2 (e.g., "Tops (-2)"). YOU MUST ensure they are still left with enough clothes to survive the trip!
+    2. TARGET BULKY/OPTIONAL ITEMS: Suggest removing heavy or highly situational "nice-to-have" items (e.g., extra jackets, heavy books) if they don't strictly align with the Travel Vibe or duration.
+    
+    *QUANTITY ACCURACY RULE (REMOVAL)*: 
+    - The number inside the parenthesis MUST be the exact amount you want to SUBTRACT. 
+    - DO NOT output the final remaining amount. 
+    - NEVER subtract an amount equal to or greater than the current total if it is a basic clothing or essential item.
+    
     ACTION 4: MIXED REQUESTS (Adding AND Removing at the same time)
     - The UI can ONLY show one card at a time. You MUST split this into two turns.
     - TURN 1 (NOW): Handle ALL additions. Set type to "add-items". 
@@ -703,14 +708,12 @@ def handle_active_trip_node(state: AgentState) -> dict:
     - If the user replies with a confirmation (e.g., "done", "added", "ready") and you have pending removals from the previous turn, trigger them NOW.
     - Set type to "remove-items" and include all the items you promised to remove using (-Quantity).
 
-    ACTION 6: "WHAT AM I MISSING" — UNPACKED ITEMS CHECK (type: "none")
-    - Triggered ONLY when the user asks a general question like "what am I missing", "what's left to pack", "what haven't I packed yet", or similar phrasing that does NOT explicitly ask for new items to add to the list.
-    - This is informational, NOT an add-items action. Set "suggestionAction": {{"type": "none", "label": "", "itemNames": [], "kind": null}}.
-    - In 'content', list out the items currently in "Unpacked Items" (items already on the list but not yet packed). 
-    - YOU MUST FORMAT THIS LIST using Markdown bullet points or a numbered list (e.g., \n- Item 1\n- Item 2). DO NOT output a comma-separated paragraph.
-    - Do NOT suggest or invent new items that aren't already in the Suitcase State.
-    - If "Unpacked Items" is empty, tell the user warmly that everything on their list is already packed.
-    - ONLY if the user explicitly asks something like "what am I missing that I haven't added to my list" or "what should I add that's not on my list yet" — meaning they are explicitly asking for items NOT currently in the Suitcase State at all — should you instead treat this as ACTION 2 (add-items) and suggest genuinely new items based on Trip Parameters, applying the CATEGORY-SMART ADDING logic above.
+    ACTION 6: "WHAT AM I MISSING" — UNPACKED ITEMS CHECK (type: "unpacked-checklist")
+    - Triggered ONLY when the user asks what is missing or left to pack from their current Suitcase State.
+    - YOU MUST SET "type" EXACTLY TO "unpacked-checklist". DO NOT USE "add-items".
+    - Set "suggestionAction": {{"type": "unpacked-checklist", "label": "Left to Pack", "itemNames": [List the items]}}
+    - CRITICAL: In "itemNames", output the EXACT item name only. DO NOT add quantities like "(x1)" or "(x2)". (e.g. use "Passport", NOT "Passport (x1)").
+    - In your 'content', say: "Here is what you still have left to pack. You can check them off right here!"
 
     EXAMPLE SUGGESTION ACTION JSON FORMATS:
     For Adding/Increasing:
@@ -758,7 +761,7 @@ def handle_active_trip_node(state: AgentState) -> dict:
             user_msg = user_message.lower()
             ai_label = action.get("label", "").lower()
             
-            valid_types = ["add-items", "remove-items", "open-screen", "review-category", "ask-question"]
+            valid_types = ["add-items", "remove-items", "open-screen", "review-category", "ask-question", "unpacked-checklist"]
             if action.get("type") not in valid_types:
                 final_dict["suggestionAction"]["type"] = "add-items"
                 
