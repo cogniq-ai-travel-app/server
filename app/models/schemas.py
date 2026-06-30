@@ -78,6 +78,7 @@ class PackedItemContext(BaseModel):
     """A lightweight representation of an item currently in the user's bag."""
     name: str = Field(description="The name of the item")
     packed: bool = Field(description="Whether the user has checked this item off in their list")
+    quantity: Optional[int] = Field(default=1, description="How many of this item are currently in the list")
 
 class TripMetadata(BaseModel):
     """The core trip details needed for Pico to understand the travel context."""

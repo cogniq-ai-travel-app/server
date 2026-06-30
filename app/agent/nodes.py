@@ -10,6 +10,10 @@ from app.agent.state import AgentState
 from typing import Dict, Any, Optional
 import base64
 
+from app.agent.sanitizer import (
+    sanitize_ai_response
+)
+
 client = genai.Client(api_key=settings.GOOGLE_API_KEY)
 
 
@@ -148,8 +152,10 @@ def generate_json_with_fallback(*, contents, config) -> dict:
 
             if not isinstance(final_dict, dict):
                 raise ValueError("Model output was not a JSON object.")
+            
+            final_dict = sanitize_ai_response(final_dict)
 
-            log_backend(f"[Gemma] Model succeeded with valid JSON: {model_name}")
+            log_backend(f"[Gemma] Model succeeded with valid JSON, sanitized JSON: {model_name}")
             return final_dict
 
         except Exception as exc:
@@ -611,43 +617,106 @@ def handle_active_trip_node(state: AgentState) -> dict:
     """
     payload = state["request_payload"]
     
+    current_list = payload.get("current_list", [])
+    print("DEBUG INCOMING CURRENT LIST:", current_list)
+    
     ctx = payload.get("trip_context") or {}
     current_list = payload.get("current_list", [])
     user_message = payload.get("user_message", "")
     
-    packed_items = [item.name if hasattr(item, 'name') else item.get('name') for item in current_list if (item.packed if hasattr(item, 'packed') else item.get('packed'))]
-    unpacked_items = [item.name if hasattr(item, 'name') else item.get('name') for item in current_list if not (item.packed if hasattr(item, 'packed') else item.get('packed'))]
+    # FORMAT UPDATE: Inject quantities into the context strings so the AI can do the math
+    def format_item(item):
+        name = item.name if hasattr(item, 'name') else item.get('name')
+        qty = item.quantity if hasattr(item, 'quantity') else item.get('quantity', 1)
+        return f"{name} (x{qty})"
+        
+    packed_items = [format_item(item) for item in current_list if (item.packed if hasattr(item, 'packed') else item.get('packed'))]
+    unpacked_items = [format_item(item) for item in current_list if not (item.packed if hasattr(item, 'packed') else item.get('packed'))]
     
     prompt_text = f"""
-    You are Pico, a friendly, warm suitcase packing mascot buddy.
-    Analyze the traveler's context and help them prepare. 
-    
+    You are Pico, a friendly, warm suitcase packing mascot buddy. Analyze the traveler's context and help them prepare.
+
     Trip Parameters:
     - Destination: {ctx.get('destination') if ctx else 'Unknown Location'}
     - Duration: {ctx.get('durationDays') if ctx else '1'} days
     - Travel Vibe: {ctx.get('tripVibe') if ctx else 'General Travel'}
     - Planned Activities: {ctx.get('activities', [])}
-    
-    Suitcase State:
-    - Packed Items (Do Not Suggest Adding These!): {packed_items}
+
+    Suitcase State (Current List & Quantities):
+    - Packed Items: {packed_items}
     - Unpacked Items: {unpacked_items}
-    
+
     CRITICAL INTENT RULES FOR UI ACTIONS:
-    - Evaluate what the user is explicitly asking for in their "User Query".
-    - If the user is simply asking a general or contextual question about the trip (e.g., "Tell me about the trip", "What are my trip details?", weather, vibe descriptions, or activity chit-chat), you MUST answer conversationally in 'content' and strictly set "suggestionAction": {{"type": "none", "label": "", "itemNames": [], "kind": null}}.
-    - ONLY provide an active recommendation action block if the user explicitly asks to modify or check items (e.g., "What am I missing?", "Suggest for activities", "Help me pack lighter", "What should I remove?").
+    Evaluate what the user is explicitly asking for in their "User Query".
+
+    ACTION 1: GENERAL CHIT-CHAT (type: "none")
+    - Triggered if the user asks a general question (e.g., weather, trip details, or activity chit-chat).
+    - Answer conversationally in 'content' and MUST set "suggestionAction": {{"type": "none", "label": "", "itemNames": [], "kind": null}}.
+
+    ACTION 2: ADDING OR INCREASING ITEMS (type: "add-items")
+    - Triggered if the user wants to ADD a specific new item, asks for RECOMMENDATIONS, OR INCREASES the quantity of an existing item.
+    - YOU MUST ALWAYS USE THE FORMAT "ItemName (+Quantity)". 
+    - Example for a new item: "Sunglasses (+3)".
+    - Example for increasing an existing item: "T-Shirt (+2)".
+    - Provide these items in the "itemNames" array.
+
+    *CATEGORY-SMART ADDING*: Before finalizing any item to add, silently reason about which packing category it belongs to (e.g., Clothing, Toiletries, Electronics, Documents, Footwear, Accessories). Use this reasoning only internally to:
+    - Pick a sensible, category-appropriate item name (e.g., if asked to "add something for the beach", reasoning about category should lead you to suggest "Beach Towel" or "Flip Flops" under Footwear/Accessories logic, not a random unrelated item).
+    - Check both Packed Items and Unpacked Items first to see if a matching or near-duplicate item already exists in that same category before suggesting a brand new one. If it exists, increase its quantity instead of creating a near-duplicate (e.g., if "T-Shirt" already exists, don't add "Tee Shirt" as a separate new item).
+    - Do NOT output a category field anywhere in the JSON or itemNames array. The category reasoning stays entirely internal — itemNames must remain flat strings exactly as shown in the existing examples.
+
+    *QUANTITY ACCURACY RULE*: When increasing or decreasing quantity, the (+N) or (-N) value must reflect ONLY the delta being requested, never the resulting total.
+    - If the user says "add 2 more t-shirts" and T-Shirt already has a quantity in the Suitcase State, output "T-Shirt (+2)" — not the new total.
+    - If the user gives an absolute target (e.g., "I want 5 t-shirts total" and 2 are already in the list), calculate the correct delta yourself and output only the difference: "T-Shirt (+3)".
+    - If the user doesn't specify a number for a new item, default to a sensible quantity of 1 unless the item is something typically needed in multiples (e.g., underwear, socks) based on trip duration, in which case use the Duration to estimate a reasonable quantity.
+    - Always cross-check the existing quantity in Packed Items or Unpacked Items before computing any delta. Never guess if the real quantity is visible in the Suitcase State.
+
+    ACTION 3: REMOVING OR REDUCING ITEMS (type: "remove-items")
+    - Triggered if the user wants to completely REMOVE an item OR REDUCE its quantity.
+    - Suggest items STRICTLY from the existing Suitcase State. 
+    - YOU MUST ALWAYS USE THE FORMAT "ItemName (-Quantity)".
+    - If completely removing an item that currently has a quantity of 1, output "Heavy Coat (-1)".
+    - If reducing the quantity, specify the amount to SUBTRACT (e.g., "Jeans (-1)").
+    - Provide these items in the "itemNames" array.
+
+    *QUANTITY ACCURACY RULE (REMOVAL)*: The same delta logic from ACTION 2 applies here. Never subtract more than the item's actual current quantity in the Suitcase State, and never output a (-N) value that would make the quantity go negative. If the user asks to remove more than exists, cap the value at the actual current quantity and remove the item entirely (treat as full removal).
+
+    ACTION 4: MIXED REQUESTS (Adding AND Removing at the same time)
+    - The UI can ONLY show one card at a time. You MUST split this into two turns.
+    - TURN 1 (NOW): Handle ALL additions. Set type to "add-items". 
+    - Put EVERY item to add in "itemNames" using (+Quantity). Do not miss any!
+    - In your 'content', tell the user explicitly: "I'll queue up your additions first! Reply 'done' when you are ready, and I'll remove the [List Items To Remove] next."
+
+    ACTION 5: FINISHING THE MIXED REQUEST
+    - If the user replies with a confirmation (e.g., "done", "added", "ready") and you have pending removals from the previous turn, trigger them NOW.
+    - Set type to "remove-items" and include all the items you promised to remove using (-Quantity).
+
+    ACTION 6: "WHAT AM I MISSING" — UNPACKED ITEMS CHECK (type: "none")
+    - Triggered ONLY when the user asks a general question like "what am I missing", "what's left to pack", "what haven't I packed yet", or similar phrasing that does NOT explicitly ask for new items to add to the list.
+    - This is informational, NOT an add-items action. Set "suggestionAction": {{"type": "none", "label": "", "itemNames": [], "kind": null}}.
+    - In 'content', list out the items currently in "Unpacked Items" (items already on the list but not yet packed). 
+    - YOU MUST FORMAT THIS LIST using Markdown bullet points or a numbered list (e.g., \n- Item 1\n- Item 2). DO NOT output a comma-separated paragraph.
+    - Do NOT suggest or invent new items that aren't already in the Suitcase State.
+    - If "Unpacked Items" is empty, tell the user warmly that everything on their list is already packed.
+    - ONLY if the user explicitly asks something like "what am I missing that I haven't added to my list" or "what should I add that's not on my list yet" — meaning they are explicitly asking for items NOT currently in the Suitcase State at all — should you instead treat this as ACTION 2 (add-items) and suggest genuinely new items based on Trip Parameters, applying the CATEGORY-SMART ADDING logic above.
     
-    IF AND ONLY IF PACKING MODIFICATIONS ARE REQUESTED:
-    - If suggesting new items to pack, you MUST set "type": "add-items". Do NOT suggest items that are already in Packed Items.
-    - If the user asks to pack lighter or remove items, you ABSOLUTELY MUST set "type": "remove-items". Do NOT use 'none'.
-    
-    EXAMPLE REMOVE JSON FORMAT:
+    EXAMPLE SUGGESTION ACTION JSON FORMATS:
+    For Adding/Increasing:
+    "suggestionAction": {{
+        "type": "add-items",
+        "label": "Add to Suitcase",
+        "itemNames": ["Swimsuit", "T-Shirt (+2)"]
+    }}
+    For Removing/Reducing:
     "suggestionAction": {{
         "type": "remove-items",
-        "label": "Remove Heavy Gear",
-        "itemNames": ["jeans", "boots"]
+        "label": "Review Removals",
+        "itemNames": ["Heavy Coat", "Jeans (-1)"]
     }}
-    
+
+    OUTPUT FORMAT — STRICT:
+    Respond with ONLY a single valid JSON object as described above. Do not include any text, explanation, markdown code fences, or commentary before or after the JSON. The entire response body must be parseable as JSON on the first attempt.
+
     User Query: {user_message}
     """
     
@@ -662,6 +731,7 @@ def handle_active_trip_node(state: AgentState) -> dict:
     
     action = final_dict.get("suggestionAction")
     
+    # Python-side safety net to ensure actions are valid and formatted correctly
     if action and action.get("type") != "none":
         item_names = action.get("itemNames", [])
         
@@ -676,11 +746,10 @@ def handle_active_trip_node(state: AgentState) -> dict:
             user_msg = user_message.lower()
             ai_label = action.get("label", "").lower()
             
-            if "remove" in user_msg or "lighter" in user_msg or "remove" in ai_label:
-                final_dict["suggestionAction"]["type"] = "remove-items"
-            elif action.get("type") not in ["add-items", "remove-items"]:
+            valid_types = ["add-items", "remove-items", "open-screen", "review-category", "ask-question"]
+            if action.get("type") not in valid_types:
                 final_dict["suggestionAction"]["type"] = "add-items"
-    
+                
     return {"final_response": final_dict}
 
 def handle_new_trip_wizard_node(state: AgentState) -> dict:
@@ -771,8 +840,14 @@ def handle_new_trip_wizard_node(state: AgentState) -> dict:
     If a file is attached, YOU MUST parse its content first. Extract the destination, dates, trip vibe, packing style, and origin location from the file content. 
     Do not ask the user for information that is already present in the attached file.
     
-    STEP 1: DATA MAPPING (DO NOT SKIP)
-    You MUST output a fully populated 'updated_draft' JSON object. Update the fields based on the ATTACHMENT first, and then supplement with the User Typed Message.
+    STEP 1: THINK BEFORE YOU PACK
+    In the "content" field of your JSON response, briefly review what the user needs. Tell the user what you are packing and WHY. Get all your conversational thoughts, adjectives, and descriptions out of your system here!
+    
+    STEP 2: STRICT DATA MAPPING (DO NOT SKIP)
+    Now, generate the 'updated_draft' JSON object. Update the fields based on the ATTACHMENT first, and then supplement with the User Typed Message.
+    Because you already explained your reasoning in STEP 1, the "categories" array MUST be completely sterile, physical nouns only.
+    - GOOD item name: "Linen Shirt"
+    - BAD item name: "A bit more relaxed linen shirt" (Put the description in the "notes" field instead!)
     
     REQUIRED KEYS to include in 'updated_draft' (use null ONLY if unknown):
     - "destination"
@@ -785,11 +860,15 @@ def handle_new_trip_wizard_node(state: AgentState) -> dict:
     *CRITICAL RULE 1*: If the file or message answers the question about '{current_focus}', YOU MUST UPDATE THAT KEY IN THE JSON! 
     *CRITICAL RULE 2*: If the user says "Category review complete", apply their Keep/Remove/Add requests to the 'categories' array. Only keep real items, NEVER inject placeholder items like "name": "name".
     
-    STEP 2: DETERMINE NEXT ACTION (Follow exactly)
+    STEP 3: DETERMINE NEXT ACTION (Follow exactly)
     Look at your newly mapped 'updated_draft'. 
+
+    *GOLDEN RULE FOR THIS STEP*: Every single 'content' bubble you write in this step, with NO exceptions, MUST end in an explicit question mark that tells the user exactly what to respond with. Never end a bubble with only a statement, a summary, or an implied "let me know" — the user should never have to guess that a reply is expected. Even a confirmation bubble must literally ask something like "Does that look right, or would you like to change anything?" — not just present the info and stop.
     
-    - IF ATTACHMENT JUST PROCESSED: If you just extracted data from an attachment, set suggestionAction to 'ask-question'. Write a conversational bubble summarizing the data you extracted and ask if it looks correct before moving forward. Do NOT generate categories yet.
-    - IF MISSING BASE FIELDS: If ANY base fields ({required_fields}) are still missing or null, set suggestionAction type to 'ask-question'. Write a warm 'content' bubble that asks for the NEXT missing field.
+    - IF ATTACHMENT JUST PROCESSED: If you just extracted data from an attachment, set suggestionAction to 'ask-question'. Write a conversational bubble summarizing the data you extracted, and then explicitly ASK the user to confirm it's correct or tell you what to fix (e.g., "Does this all look right, or is there anything you'd like to change?"). Do NOT generate categories yet.
+    - IF MISSING BASE FIELDS: If ANY base fields ({required_fields}) are still missing or null, set suggestionAction type to 'ask-question'. Write a warm 'content' bubble that asks for the NEXT missing field, ending in a direct question.
+        -> If asking for "tripVibe": You MUST always include 2-3 concrete vibe examples tailored to the 'destination' (e.g., for a beach city: "relaxed beach days, lively nightlife, or a mix of both?"). If 'destination' is still null or unknown, fall back to generic but concrete examples (e.g., "beach, party, chill, or exploring?") rather than skipping examples. Never ask "what's your trip vibe?" without giving examples.
+        -> If asking for "packingStyle": You MUST always spell out all the options for the user before asking, every time, not just briefly — e.g., "Light = essentials only, Balanced = a practical mix, Prepared = ready for anything, Pro = exhaustive packing." Then ask the user which one fits, by name.
     - IF STARTING REVIEW: If ALL base fields are present and 'categories' is empty/null, GENERATE a complete packing list categorized into logical groups.
     - Do NOT decide which category is shown first.
     - Do NOT set the final trip card yourself.
@@ -797,13 +876,14 @@ def handle_new_trip_wizard_node(state: AgentState) -> dict:
     - The Python backend will handle category ordering, review status, category index, and final card timing.
     - Your job here is only to return the completed updated_draft.categories data.  
     
-    PACKING LIST SIZE CONTROL:
+    PACKING LIST SIZE & QUALITY CONTROL:
     When generating categories, create exactly 5 categories.
     Each category must contain 4 to 6 items only.
+    *CATEGORY ALIGNMENT CHECK*: Before finalizing, verify that every single item logically belongs in its assigned category (e.g., do not put "Sunglasses" inside a "Toiletries" category).
     Keep item names short and practical.
     Do not write long notes unless truly necessary.
     """
-    
+
     if attachment and attachment.get("base64_data"):
         contents_list.append("The user has uploaded a file. Please read the full text/content of this file and use it to populate the required fields in the 'updated_draft' JSON.")
     
