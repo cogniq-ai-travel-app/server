@@ -99,6 +99,7 @@ class ChatRequest(BaseModel):
     thread_id: str = Field(default="default_thread", description="Unique identifier for the LangGraph conversation memory")
     
     mode: str = Field(default="general", description="The active context interaction mode ('general', 'activeTrips', 'newTrip')")
+    language: Optional[str] = Field(default=None, description="The user's currently selected language (e.g. en, hi, es)")
     chat_history: Optional[List[Dict[str, Any]]] = Field(
         default_factory=list, 
         description="The recent conversation history array sent from the frontend"

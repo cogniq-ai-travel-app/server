@@ -632,6 +632,21 @@ def handle_active_trip_node(state: AgentState) -> dict:
     ctx = payload.get("trip_context") or {}
     current_list = payload.get("current_list", [])
     user_message = payload.get("user_message", "")
+    language_code = payload.get("language") or "en"
+
+    lang_map = {
+        "en": "English",
+        "es": "Spanish",
+        "fr": "French",
+        "de": "German",
+        "pt-BR": "Portuguese",
+        "it": "Italian",
+        "ru": "Russian",
+        "ja": "Japanese",
+        "ko": "Korean",
+        "hi": "Hindi"
+    }
+    target_lang = lang_map.get(language_code, "English")
 
     raw_history = payload.get("chat_history", [])
     
@@ -658,6 +673,8 @@ def handle_active_trip_node(state: AgentState) -> dict:
     
     prompt_text = f"""
     You are Zippy, a friendly, warm suitcase packing mascot buddy. Analyze the traveler's context and help them prepare.
+
+    *CRITICAL LANGUAGE RULE*: Always output item names, item descriptions, and category names in English, regardless of the language the user is chatting in or what language the prompt is in. The conversational reply ("content") should match the user's selected language: {target_lang}. You MUST respond conversationally in {target_lang}. However, any packing items and category names in suggestionAction, updated_draft, or list additions MUST remain in English.
 
     Trip Parameters:
     - Destination: {ctx.get('destination') if ctx else 'Unknown Location'}
@@ -793,6 +810,20 @@ def handle_new_trip_wizard_node(state: AgentState) -> dict:
     """
     
     payload = state.get("request_payload") or {}
+    language_code = payload.get("language") or "en"
+    lang_map = {
+        "en": "English",
+        "es": "Spanish",
+        "fr": "French",
+        "de": "German",
+        "pt-BR": "Portuguese",
+        "it": "Italian",
+        "ru": "Russian",
+        "ja": "Japanese",
+        "ko": "Korean",
+        "hi": "Hindi"
+    }
+    target_lang = lang_map.get(language_code, "English")
     
     draft = normalize_trip_dates_in_draft(
         state.get("current_draft") or payload.get("current_draft") or {}
@@ -855,6 +886,8 @@ def handle_new_trip_wizard_node(state: AgentState) -> dict:
     
     prompt_text = f"""
     You are Zippy, the friendly trip setup assistant.
+
+    *CRITICAL LANGUAGE RULE*: Always output item names, item descriptions, and category names in English, regardless of the language the user is chatting in or what language the prompt is in. The conversational reply ("content") should match the user's selected language: {target_lang}. You MUST respond conversationally in {target_lang}. However, any packing items and category names in suggestionAction, updated_draft, or list additions MUST remain in English.
     
     Today's date is {today_iso}.
     If the user gives dates without a year, infer the next upcoming valid date range.
@@ -1019,10 +1052,26 @@ def handle_general_travel_node(state: AgentState) -> dict:
     """
     payload = state["request_payload"]
     user_message = payload.get("user_message", "") 
+    language_code = payload.get("language") or "en"
+    lang_map = {
+        "en": "English",
+        "es": "Spanish",
+        "fr": "French",
+        "de": "German",
+        "pt-BR": "Portuguese",
+        "it": "Italian",
+        "ru": "Russian",
+        "ja": "Japanese",
+        "ko": "Korean",
+        "hi": "Hindi"
+    }
+    target_lang = lang_map.get(language_code, "English")
     
     prompt_text = f"""
     You are Zippy, a friendly travel assistant mascot. Answer general travel queries conversationally.
     This includes airline regulations, luggage restrictions, folding methods, or document protocols.
+
+    *CRITICAL LANGUAGE RULE*: Always output item names, item descriptions, and category names in English, regardless of the language the user is chatting in or what language the prompt is in. The conversational reply ("content") should match the user's selected language: {target_lang}. You MUST respond conversationally in {target_lang}. However, any packing items and category names in suggestionAction, updated_draft, or list additions MUST remain in English.
     
     CRITICAL RULES FOR UI ACTIONS:
     - Since there is no specific trip attached, reply helpfully and keep suggestionAction type to 'none' by default.
