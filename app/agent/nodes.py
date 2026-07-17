@@ -646,7 +646,7 @@ def handle_active_trip_node(state: AgentState) -> dict:
     unpacked_items = [format_item(item) for item in current_list if not (item.packed if hasattr(item, 'packed') else item.get('packed'))]
     
     prompt_text = f"""
-    You are Pico, a friendly, warm suitcase packing mascot buddy. Analyze the traveler's context and help them prepare.
+    You are Zippy, a friendly, warm suitcase packing mascot buddy. Analyze the traveler's context and help them prepare.
 
     Trip Parameters:
     - Destination: {ctx.get('destination') if ctx else 'Unknown Location'}
@@ -836,7 +836,7 @@ def handle_new_trip_wizard_node(state: AgentState) -> dict:
     today_iso = date.today().isoformat()
     
     prompt_text = f"""
-    You are Pico, the friendly trip setup assistant.
+    You are Zippy, the friendly trip setup assistant.
     
     Today's date is {today_iso}.
     If the user gives dates without a year, infer the next upcoming valid date range.
@@ -1003,7 +1003,7 @@ def handle_general_travel_node(state: AgentState) -> dict:
     user_message = payload.get("user_message", "") 
     
     prompt_text = f"""
-    You are Pico, a friendly travel assistant mascot. Answer general travel queries conversationally.
+    You are Zippy, a friendly travel assistant mascot. Answer general travel queries conversationally.
     This includes airline regulations, luggage restrictions, folding methods, or document protocols.
     
     CRITICAL RULES FOR UI ACTIONS:
