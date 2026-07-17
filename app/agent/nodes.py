@@ -629,12 +629,23 @@ def handle_active_trip_node(state: AgentState) -> dict:
     """
     payload = state["request_payload"]
     
-    current_list = payload.get("current_list", [])
-    print("DEBUG INCOMING CURRENT LIST:", current_list)
-    
     ctx = payload.get("trip_context") or {}
     current_list = payload.get("current_list", [])
     user_message = payload.get("user_message", "")
+
+    raw_history = payload.get("chat_history", [])
+    
+    print("🛑 BACKEND INBOUND HISTORY:", json.dumps(raw_history, indent=2), flush=True)
+
+    history_text = "No previous context."
+    if raw_history:
+        history_lines = []
+        for msg in raw_history:
+            role = "User" if msg.get("role") == "user" else "Pico"
+            history_lines.append(f"{role}: {msg.get('content')}")
+        history_text = "\n".join(history_lines)
+
+    print("✅ EXTRACTED HISTORY:\n", history_text, flush=True)
     
     # FORMAT UPDATE: Inject quantities into the context strings so the AI can do the math
     def format_item(item):
@@ -658,6 +669,9 @@ def handle_active_trip_node(state: AgentState) -> dict:
     - Packed Items: {packed_items}
     - Unpacked Items: {unpacked_items}
 
+    Recent Conversation History (For Context):
+    {history_text}
+
     CRITICAL INTENT RULES FOR UI ACTIONS:
     Evaluate what the user is explicitly asking for in their "User Query".
 
@@ -665,38 +679,27 @@ def handle_active_trip_node(state: AgentState) -> dict:
     - Triggered if the user asks a general question (e.g., weather, trip details, or activity chit-chat).
     - Answer conversationally in 'content' and MUST set "suggestionAction": {{"type": "none", "label": "", "itemNames": [], "kind": null}}.
 
-    ACTION 2: ADDING OR INCREASING ITEMS (type: "add-items")
-    - Triggered if the user wants to ADD a specific new item, asks for RECOMMENDATIONS, OR INCREASES the quantity of an existing item.
+   ACTION 2: ADDING NEW ITEMS OR RECOMMENDATIONS (type: "add-items")
+    - Triggered ONLY if the user asks for new item recommendations or wants to add a brand NEW item not currently in their list.
+    - DO NOT use this if the user explicitly asks to increase the quantity of an item they already packed (use ACTION 7 instead).
     - YOU MUST ALWAYS USE THE FORMAT "ItemName (+Quantity)". 
-    - Example for a new item: "Sunglasses (+3)".
-    - Example for increasing an existing item: "T-Shirt (+2)".
     - Provide these items in the "itemNames" array.
 
-    *CATEGORY-SMART ADDING*: Before finalizing any item to add, silently reason about which packing category it belongs to (e.g., Clothing, Toiletries, Electronics, Documents, Footwear, Accessories). Use this reasoning only internally to:
-    - Pick a sensible, category-appropriate item name (e.g., if asked to "add something for the beach", reasoning about category should lead you to suggest "Beach Towel" or "Flip Flops" under Footwear/Accessories logic, not a random unrelated item).
-    - Check both Packed Items and Unpacked Items first to see if a matching or near-duplicate item already exists in that same category before suggesting a brand new one. If it exists, increase its quantity instead of creating a near-duplicate (e.g., if "T-Shirt" already exists, don't add "Tee Shirt" as a separate new item).
-    - Do NOT output a category field anywhere in the JSON or itemNames array. The category reasoning stays entirely internal — itemNames must remain flat strings exactly as shown in the existing examples.
+    *CATEGORY-SMART ADDING*: Before finalizing any new item, silently reason about which packing category it belongs to.
+    - Pick a sensible, category-appropriate item name (e.g., if asked for "beach stuff", suggest "Beach Towel").
+    - If you realize the user is asking for something that already exists in the Suitcase State (e.g., they ask for "a tee shirt" and "T-Shirt" is already packed), switch to ACTION 7 logic and output a direct update instead of creating a duplicate.
+    - Do NOT output a category field anywhere in the JSON or itemNames array. 
 
-    *QUANTITY ACCURACY RULE*: When increasing or decreasing quantity, the (+N) or (-N) value must reflect ONLY the delta being requested, never the resulting total.
-    - If the user says "add 2 more t-shirts" and T-Shirt already has a quantity in the Suitcase State, output "T-Shirt (+2)" — not the new total.
-    - If the user gives an absolute target (e.g., "I want 5 t-shirts total" and 2 are already in the list), calculate the correct delta yourself and output only the difference: "T-Shirt (+3)".
-    - If the user doesn't specify a number for a new item, default to a sensible quantity of 1 unless the item is something typically needed in multiples (e.g., underwear, socks) based on trip duration, in which case use the Duration to estimate a reasonable quantity.
-    - Always cross-check the existing quantity in Packed Items or Unpacked Items before computing any delta. Never guess if the real quantity is visible in the Suitcase State.
-
-    ACTION 3: REMOVING OR REDUCING ITEMS (type: "remove-items")
-    - Triggered if the user wants to completely REMOVE an item, REDUCE its quantity, OR asks generally to "pack lighter" / "help me downsize".
-    - Suggest items STRICTLY from the existing Suitcase State. 
+    ACTION 3: GENERAL DOWNSIZING & "PACK LIGHTER" SUGGESTIONS (type: "remove-items")
+    - Triggered ONLY when the user asks generally to "pack lighter", "downsize", or "help me reduce" without naming specific items.
+    - This is for when YOU (Pico) are guessing what to remove, which means the user MUST review a card.
+    - DO NOT use this if the user explicitly tells you what to remove (use ACTION 7 instead).
     - YOU MUST ALWAYS USE THE FORMAT "ItemName (-Quantity)". ABSOLUTELY NO PLUS SIGNS (+N) ARE ALLOWED IN THIS ACTION.
 
-    *SMART REDUCTION & PACK LIGHTER LOGIC*: 
-    If the user asks to pack lighter, think like a practical human traveler before suggesting removals:
-    1. PROTECT ESSENTIALS (THE SURVIVAL BASELINE): NEVER suggest removing the entirety of critical items (e.g., Tops, Underwear, Bottoms, Passports, sole phone chargers). If they have 7 Tops for a 6-day trip, suggest removing 1 or 2 (e.g., "Tops (-2)"). YOU MUST ensure they are still left with enough clothes to survive the trip!
-    2. TARGET BULKY/OPTIONAL ITEMS: Suggest removing heavy or highly situational "nice-to-have" items (e.g., extra jackets, heavy books) if they don't strictly align with the Travel Vibe or duration.
-    
-    *QUANTITY ACCURACY RULE (REMOVAL)*: 
-    - The number inside the parenthesis MUST be the exact amount you want to SUBTRACT. 
-    - DO NOT output the final remaining amount. 
-    - NEVER subtract an amount equal to or greater than the current total if it is a basic clothing or essential item.
+    *SMART REDUCTION LOGIC*: 
+    If the user asks to pack lighter, think like a practical human traveler:
+    1. PROTECT ESSENTIALS (THE SURVIVAL BASELINE): NEVER suggest removing the entirety of critical items (e.g., Tops, Underwear, Bottoms, Passports). If they have 7 Tops for a 6-day trip, suggest removing 1 or 2 (e.g., "Tops (-2)"). YOU MUST ensure they are still left with enough clothes to survive the trip!
+    2. TARGET BULKY/OPTIONAL ITEMS: Suggest removing heavy or highly situational "nice-to-have" items first.
     
     ACTION 4: MIXED REQUESTS (Adding AND Removing at the same time)
     - The UI can ONLY show one card at a time. You MUST split this into two turns.
@@ -714,6 +717,19 @@ def handle_active_trip_node(state: AgentState) -> dict:
     - Set "suggestionAction": {{"type": "unpacked-checklist", "label": "Left to Pack", "itemNames": [List the items]}}
     - CRITICAL: In "itemNames", output the EXACT item name only. DO NOT add quantities like "(x1)" or "(x2)". (e.g. use "Passport", NOT "Passport (x1)").
     - In your 'content', say: "Here is what you still have left to pack. You can check them off right here!"
+
+    ACTION 7: DIRECT EXPLICIT QUANTITY UPDATES (type: "direct-update")
+    - Triggered when the user commands you to increase, decrease, or completely remove an item ALREADY in their Suitcase State.
+    - PRONOUN RESOLUTION RULE: If the user just says "add 3 more" or "remove it", look EXACTLY ONE MESSAGE UP in the 'Recent Conversation History'. If you were just talking about "sunglasses", you MUST apply the math to "Sunglasses". DO NOT default or guess random items like "Tops".
+    - YOU MUST SET "type" EXACTLY TO "direct-update".
+    - Use the exact formatting: "ItemName (+Quantity)" or "ItemName (-Quantity)".
+    - CHAIN OF THOUGHT RULE: In your 'content' field, you MUST explicitly name the item you are updating so the user knows you understood them (e.g., "I've added 3 more sunglasses!"). NEVER just say "I've added 3 more!"
+
+    *QUANTITY ACCURACY RULE (APPLIES TO ACTION 7)*: 
+    - The (+N) or (-N) value must reflect ONLY the delta being requested, never the resulting total.
+    - If the user says "add 2 more t-shirts", output "T-Shirt (+2)".
+    - If the user gives an absolute target (e.g., "I want 5 t-shirts total" and 2 are already in the list), calculate the delta yourself and output the difference: "T-Shirt (+3)".
+    - NEVER subtract an amount equal to or greater than the current total if it is a basic clothing or essential item, unless the user explicitly commands you to completely remove it.
 
     EXAMPLE SUGGESTION ACTION JSON FORMATS:
     For Adding/Increasing:
@@ -761,7 +777,7 @@ def handle_active_trip_node(state: AgentState) -> dict:
             user_msg = user_message.lower()
             ai_label = action.get("label", "").lower()
             
-            valid_types = ["add-items", "remove-items", "open-screen", "review-category", "ask-question", "unpacked-checklist"]
+            valid_types = ["add-items", "remove-items", "open-screen", "review-category", "ask-question", "unpacked-checklist",'direct-update']
             if action.get("type") not in valid_types:
                 final_dict["suggestionAction"]["type"] = "add-items"
                 

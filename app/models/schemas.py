@@ -99,6 +99,10 @@ class ChatRequest(BaseModel):
     thread_id: str = Field(default="default_thread", description="Unique identifier for the LangGraph conversation memory")
     
     mode: str = Field(default="general", description="The active context interaction mode ('general', 'activeTrips', 'newTrip')")
+    chat_history: Optional[List[Dict[str, Any]]] = Field(
+        default_factory=list, 
+        description="The recent conversation history array sent from the frontend"
+    )
     trip_context: Optional[TripMetadata] = Field(
         default=None, 
         description="The route and situational metadata for the current trip. Can be null in general or pre-trip modes."
@@ -122,7 +126,7 @@ class SuggestionAction(BaseModel):
     The actionable data block that tells the React Native UI to render a clickable chip.
     """
 
-    type: Literal['add-items', 'remove-items', 'open-screen', 'none', 'ask-question', 'review-category', 'unpacked-checklist'] = Field(
+    type: Literal['add-items', 'remove-items', 'open-screen', 'none', 'ask-question', 'review-category', 'unpacked-checklist','direct-update'] = Field(
         default='none',
         description="The action type execution rule. Use 'ask-question' for missing info, 'review-category' for category approval."
     )
