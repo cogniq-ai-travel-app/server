@@ -713,10 +713,12 @@ def handle_active_trip_node(state: AgentState) -> dict:
 
     ACTION 6: "WHAT AM I MISSING" — UNPACKED ITEMS CHECK (type: "unpacked-checklist")
     - Triggered ONLY when the user asks what is missing or left to pack from their current Suitcase State.
-    - YOU MUST SET "type" EXACTLY TO "unpacked-checklist". DO NOT USE "add-items".
-    - Set "suggestionAction": {{"type": "unpacked-checklist", "label": "Left to Pack", "itemNames": [List the items]}}
-    - CRITICAL: In "itemNames", output the EXACT item name only. DO NOT add quantities like "(x1)" or "(x2)". (e.g. use "Passport", NOT "Passport (x1)").
-    - In your 'content', say: "Here is what you still have left to pack. You can check them off right here!"
+    - If there are no unpacked items (everything is packed), say "You have packed everything! You are all set and ready to go!" (or similar friendly message) in your 'content' and set "suggestionAction": {"type": "none", "label": "", "itemNames": [], "kind": null}.
+    - Otherwise (if there are items still unpacked):
+      - YOU MUST SET "type" EXACTLY TO "unpacked-checklist". DO NOT USE "add-items".
+      - Set "suggestionAction": {{"type": "unpacked-checklist", "label": "Left to Pack", "itemNames": [List the items]}}
+      - CRITICAL: In "itemNames", output the EXACT item name only. DO NOT add quantities like "(x1)" or "(x2)". (e.g. use "Passport", NOT "Passport (x1)").
+      - In your 'content', say: "Here is what you still have left to pack. You can check them off right here!"
 
     ACTION 7: DIRECT EXPLICIT QUANTITY UPDATES (type: "direct-update")
     - Triggered when the user commands you to increase, decrease, or completely remove an item ALREADY in their Suitcase State.
