@@ -5,6 +5,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from app.api.chat import router as chat_router
 from app.api.trip import router as trip_router
+from app.core.supabase_keepalive import check_and_ping
 
 app = FastAPI(
     title="PackPals AI Backend Orchestrator", 
@@ -20,8 +21,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+@app.on_event("startup")
+async def startup_event():
+    check_and_ping()
+
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
+    check_and_ping()
     started_at = time.time()
 
     print(
