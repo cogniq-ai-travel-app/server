@@ -51,11 +51,14 @@ class GeneratedCategory(BaseModel):
 class TripDraftConfig(BaseModel):
     """The dynamic delta parameters object extracted from user input or images."""
     destination: Optional[str] = Field(default=None, description="The extracted name of the target destination")
-    tripVibe: Optional[str] = Field(default=None, description="The extracted travel vibe style (e.g., beach, business, camping, citybreak)")
-    packingStyle: Optional[str] = Field(default=None, description="The extracted preference style (e.g., light traveler, balanced, prepared pro)")
+    tripVibe: Optional[Literal["beach", "business", "skiSnow", "camping", "cityBreak", "roadTrip", "international"]] = Field(default=None, description="The travel vibe style")
+    packingStyle: Optional[Literal["light", "balanced", "prepared"]] = Field(default=None, description="The preference style")
     startDate: Optional[str] = Field(default=None, description="The start date of the trip in YYYY-MM-DD format")
     endDate: Optional[str] = Field(default=None, description="The end date of the trip in YYYY-MM-DD format")
     fromLocation: Optional[str] = Field(default=None, description="The starting location or departure city")
+    isMultiStop: Optional[bool] = Field(default=None, description="Whether this is a multi-stop trip (true/false)")
+    companions: Optional[Literal["solo", "partner", "friends", "familyKids"]] = Field(default=None, description="Travel companions")
+    laundryAccess: Optional[bool] = Field(default=None, description="Access to laundry services during trip (true/false)")
     
     categories: Optional[List[GeneratedCategory]] = Field(
         default=None, 

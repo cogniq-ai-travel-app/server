@@ -853,15 +853,25 @@ def handle_new_trip_wizard_node(state: AgentState) -> dict:
         return make_review_response(
             {
                 **draft,
-                "categories": existing_categories,
-                "picoReviewStatus": "reviewing",
-                "picoReviewIndex": review_index,
-            },
-            review_index,
-            f"Let’s continue with {existing_categories[review_index].get('name')}.",
-        )
-    
-    required_fields = ["destination", "tripVibe", "packingStyle", "startDate", "endDate", "fromLocation"]
+        "categories": existing_categories,
+        "picoReviewStatus": "reviewing",
+        "picoReviewIndex": review_index,
+    },
+    review_index,
+    f"Let’s continue with {existing_categories[review_index].get('name')}.",
+)
+
+    required_fields = [
+        "fromLocation",
+        "destination",
+        "startDate",
+        "endDate",
+        "isMultiStop",
+        "tripVibe",
+        "packingStyle",
+        "companions",
+        "laundryAccess",
+    ]
     missing_fields = [field for field in required_fields if not draft.get(field)]
 
     contents_list = []
@@ -916,12 +926,20 @@ def handle_new_trip_wizard_node(state: AgentState) -> dict:
     - BAD item name: "A bit more relaxed linen shirt" (Put the description in the "notes" field instead!)
     
     REQUIRED KEYS to include in 'updated_draft' (use null ONLY if unknown):
+    - "fromLocation"
     - "destination"
-    - "tripVibe" (e.g., beach, party, chill, exploring)
-    - "packingStyle" (e.g., light, balanced, pro)
     - "startDate" (YYYY-MM-DD)
     - "endDate" (YYYY-MM-DD)
-    - "fromLocation"
+    - "isMultiStop" (true/false)
+    - "tripVibe" (MUST be one of: beach, business, skiSnow, camping, cityBreak, roadTrip, international)
+    - "packingStyle" (MUST be one of: light, balanced, prepared)
+    - "companions" (MUST be one of: solo, partner, friends, familyKids)
+    - "laundryAccess" (true/false)
+    
+    MAP USER REPLIES TO THESE EXACT VALUES:
+    - tripVibe: Map "leisure/vacation/city break" to "cityBreak", "beach/sun" to "beach", "ski/winter" to "skiSnow", "camping/outdoors" to "camping", "road trip/drive" to "roadTrip", "work/conference" to "business", "overseas/long distance" to "international".
+    - packingStyle: Map "light/minimalist/essentials" to "light", "balanced/normal/standard" to "balanced", "prepared/heavy/everything" to "prepared".
+    - companions: Map "alone/by myself" to "solo", "partner/spouse/couple" to "partner", "friends/group" to "friends", "family/kids" to "familyKids".
     
     *CRITICAL RULE 1*: If the file or message answers the question about '{current_focus}', YOU MUST UPDATE THAT KEY IN THE JSON! 
     *CRITICAL RULE 2*: If the user says "Category review complete", apply their Keep/Remove/Add requests to the 'categories' array. Only keep real items, NEVER inject placeholder items like "name": "name".
@@ -932,9 +950,20 @@ def handle_new_trip_wizard_node(state: AgentState) -> dict:
     *GOLDEN RULE FOR THIS STEP*: Every single 'content' bubble you write in this step, with NO exceptions, MUST end in an explicit question mark that tells the user exactly what to respond with. Never end a bubble with only a statement, a summary, or an implied "let me know" — the user should never have to guess that a reply is expected. Even a confirmation bubble must literally ask something like "Does that look right, or would you like to change anything?" — not just present the info and stop.
     
     - IF ATTACHMENT JUST PROCESSED: If you just extracted data from an attachment, set suggestionAction to 'ask-question'. Write a conversational bubble summarizing the data you extracted, and then explicitly ASK the user to confirm it's correct or tell you what to fix (e.g., "Does this all look right, or is there anything you'd like to change?"). Do NOT generate categories yet.
+    
+    - SPECIAL USER COMMAND "MANUAL MODE":
+      If the user explicitly asks to open the manual mode, use manual planner, or says something like "open manual mode" or "go to manual page", set 'suggestionAction' type to 'open-screen', label to 'Open Manual Planner', and set the route field to '/trip/new/plan'. In your content, say: "Sure! Let's open the manual trip planner."
+      
     - IF MISSING BASE FIELDS: If ANY base fields ({required_fields}) are still missing or null, set suggestionAction type to 'ask-question'. Write a warm 'content' bubble that asks for the NEXT missing field, ending in a direct question.
-        -> If asking for "tripVibe": You MUST always include 2-3 concrete vibe examples tailored to the 'destination' (e.g., for a beach city: "relaxed beach days, lively nightlife, or a mix of both?"). If 'destination' is still null or unknown, fall back to generic but concrete examples (e.g., "beach, party, chill, or exploring?") rather than skipping examples. Never ask "what's your trip vibe?" without giving examples.
-        -> If asking for "packingStyle": You MUST always spell out all the options for the user before asking, every time, not just briefly — e.g., "Light = essentials only, Balanced = a practical mix, Prepared = ready for anything, Pro = exhaustive packing." Then ask the user which one fits, by name.
+        -> If asking for "fromLocation": Ask the user where they are starting their journey from (departure city/airport).
+        -> If asking for "destination": Ask the user where they are traveling to (destination city/country).
+        -> If asking for "startDate" or "endDate": Ask the traveler for their travel dates or duration (e.g., "What are your travel dates?").
+        -> If asking for "isMultiStop": Ask if this is a single-destination trip or a multi-stop journey (yes/no).
+        -> If asking for "tripVibe": You MUST always include 2-3 concrete vibe examples tailored to the 'destination' (e.g., for Tokyo: "a city break exploring temples and tech, or an active adventure?"). If 'destination' is still null or unknown, fall back to generic but concrete examples (e.g., "beach, party, chill, or exploring?") rather than skipping examples. Never ask "what's your trip vibe?" without giving examples.
+        -> If asking for "packingStyle": You MUST always spell out all the options for the user before asking, every time, not just briefly — e.g., "Light = essentials only, Balanced = a practical mix, Prepared = ready for anything." Then ask the user which one fits.
+        -> If asking for "companions": Ask who they are traveling with: solo, partner, friends, or family/kids.
+        -> If asking for "laundryAccess": Ask if they will have access to laundry facilities during their trip (yes/no).
+        
     - IF STARTING REVIEW: If ALL base fields are present and 'categories' is empty/null, GENERATE a complete packing list categorized into logical groups.
     - Do NOT decide which category is shown first.
     - Do NOT set the final trip card yourself.
@@ -1004,7 +1033,18 @@ def handle_new_trip_wizard_node(state: AgentState) -> dict:
                 "kind": None,
             }
 
-            target_clean = true_next_target.replace("trip", "")
+            field_labels = {
+                "fromLocation": "departure location",
+                "destination": "destination",
+                "startDate": "travel start date",
+                "endDate": "travel end date",
+                "isMultiStop": "trip stops (single-destination or multi-stop choice)",
+                "tripVibe": "trip vibe",
+                "packingStyle": "packing style",
+                "companions": "travel companions",
+                "laundryAccess": "laundry accessibility",
+            }
+            target_clean = field_labels.get(true_next_target, true_next_target.replace("trip", "").lower())
             final_dict["content"] = (
                 f"Just to make sure I have it right, what is your {target_clean}?"
             )
